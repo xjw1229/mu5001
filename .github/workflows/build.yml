@@ -21,12 +21,13 @@ jobs:
       - name: Install Flet
         run: pip install flet
         
-      # 💥 终极修复：用 yes 命令强行自动回答 y，完美避开 EOFError 💥
+      # 1. 核心修改：使用 --target 限制只打包 64位(arm64) 架构，缩小体积
       - name: Build APK
-        run: yes | flet build apk
+        run: yes | flet build apk --org com.zte.manager2026 --target arm64-v8a
         
+      # 2. 核心修改：明确指定上传你想要的那个文件
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ZteManagerAPK
-          path: '**/*.apk'
+          name: mu5001_v1.0  # 这是下载的压缩包名字（不能和里面的apk重名，否则会乱）
+          path: build/apk/app-arm64-v8a-release.apk # 精确指向那个瘦身后的安装包

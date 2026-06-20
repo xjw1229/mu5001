@@ -19,12 +19,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
           
-      # ==========================================
-      # 🌟 核心救命稻草：提前强行装好 Flutter！
-      # ==========================================
-      - name: 配置 Flutter
+      - name: 配置 Flutter (锁定兼容版本)
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.24.3'
           channel: 'stable'
           
       - name: 安装依赖

@@ -41,8 +41,9 @@ def mask_to_lte_bands(mask_str):
 # ==========================================
 def main(page: ft.Page):
     page.title = "ZTE高级管家"
-    page.window_width = 420
-    page.window_height = 980
+    # 旧写法 page.window_width / page.window_height 已废弃
+    page.window.width = 420
+    page.window.height = 980
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.AUTO

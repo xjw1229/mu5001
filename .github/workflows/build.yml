@@ -29,18 +29,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 核心修复：去掉了所有非法的自定义参数，只保留官方支持的核心参数
       - name: 构建安卓 APK
         run: |
           flet build apk \
             --org com.zte \
             --project-name ZTEManager \
-            --permission android.permission.INTERNET \
-            --permission android.permission.ACCESS_NETWORK_STATE \
-            --android-uses-cleartext-traffic \
             --build-number ${{ github.run_number }}
 
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
         with:
           name: ZTE-Manager-APK
-          path: build/apk/app-release.apk
+          path: build/apk/*.apk

@@ -7,10 +7,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # 1. 安装 Flutter，这会自动配置好 SDK，Flet 就不会再问你要不要安装了
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0' # 确保版本兼容
+          flutter-version: '3.22.0'
           channel: 'stable'
       
       - uses: actions/setup-python@v5
@@ -20,12 +19,18 @@ jobs:
       - name: Install Flet
         run: pip install flet
         
-      # 2. 现在 Flutter 已经安装好了，Flet 运行时不会再弹出任何询问
+      # 核心方案：使用 --no-flutter 参数，强制 Flet 只打包代码，不要去管 Flutter SDK
+      - name: Package Python App
+        run: flet build apk --no-flutter
+        
+      # 手动触发 Flutter 构建，这样它就不会有任何交互询问了
       - name: Build APK
-        run: flet build apk
+        run: |
+          cd build/flutter
+          flutter build apk --release
         
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ZteManagerAPK
-          path: build/apk/app-release.apk
+          path: build/flutter/build/app/outputs/flutter-apk/app-release.apk

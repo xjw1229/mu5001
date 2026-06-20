@@ -7,11 +7,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - uses: subosito/flutter-action@v2
+      # 配置 Android 编译所需的 Java 环境
+      - uses: actions/setup-java@v4
         with:
-          flutter-version: '3.22.0'
-          channel: 'stable'
+          distribution: 'temurin'
+          java-version: '17'
       
+      # 配置 Python 环境
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -19,18 +21,12 @@ jobs:
       - name: Install Flet
         run: pip install flet
         
-      # 核心方案：使用 --no-flutter 参数，强制 Flet 只打包代码，不要去管 Flutter SDK
-      - name: Package Python App
-        run: flet build apk --no-flutter
-        
-      # 手动触发 Flutter 构建，这样它就不会有任何交互询问了
+      # 💥 终极修复：用 yes 命令强行自动回答 y，完美避开 EOFError 💥
       - name: Build APK
-        run: |
-          cd build/flutter
-          flutter build apk --release
+        run: yes | flet build apk
         
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ZteManagerAPK
-          path: build/flutter/build/app/outputs/flutter-apk/app-release.apk
+          path: build/apk/app-release.apk

@@ -1,0 +1,6 @@
+[tool.flet.android.manifest_application]
+usesCleartextTraffic = "true"
+
+[tool.flet.android.permission]
+"android.permission.INTERNET" = true
+"android.permission.ACCESS_NETWORK_STATE" = true

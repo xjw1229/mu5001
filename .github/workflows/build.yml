@@ -7,13 +7,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # 配置 Android 编译所需的 Java 环境
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
       
-      # 配置 Python 环境
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -21,13 +19,13 @@ jobs:
       - name: Install Flet
         run: pip install flet
         
-      # 1. 核心修改：使用 --target 限制只打包 64位(arm64) 架构，缩小体积
+      # 1. 删除了导致报错的 target 参数，恢复正常的打包指令
       - name: Build APK
-        run: yes | flet build apk --org com.zte.manager2026 --target arm64-v8a
+        run: yes | flet build apk --org com.zte.manager2026
         
-      # 2. 核心修改：明确指定上传你想要的那个文件
+      # 2. 取消盲搜，精准抓取！只上传干干净净的一个 mu5001.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: mu5001_v1.0  # 这是下载的压缩包名字（不能和里面的apk重名，否则会乱）
-          path: build/apk/app-arm64-v8a-release.apk # 精确指向那个瘦身后的安装包
+          name: mu5001_App
+          path: build/apk/mu5001.apk

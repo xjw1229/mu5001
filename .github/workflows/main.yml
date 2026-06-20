@@ -6,14 +6,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
+      # 1. 安装 Flutter，这会自动配置好 SDK，Flet 就不会再问你要不要安装了
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0' # 确保版本兼容
+          channel: 'stable'
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          
       - name: Install Flet
         run: pip install flet
+        
+      # 2. 现在 Flutter 已经安装好了，Flet 运行时不会再弹出任何询问
       - name: Build APK
-        # 在这里加上 -y 参数，自动确认所有询问
-        run: flet build apk -- --yes
+        run: flet build apk
+        
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

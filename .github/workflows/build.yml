@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 配置 JDK 17（安卓构建必需）
+      - name: 配置 JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -36,12 +36,11 @@ jobs:
             --project-name ZTEManager \
             --permission android.permission.INTERNET \
             --permission android.permission.ACCESS_NETWORK_STATE \
-            --uses-cleartext-traffic true \
-            --build-number ${{ github.run_number }} \
-            --no-rich-output
+            --android-uses-cleartext-traffic \
+            --build-number ${{ github.run_number }}
 
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
         with:
           name: ZTE-Manager-APK
-          path: build/apk/mu5001.apk
+          path: build/apk/app-release.apk

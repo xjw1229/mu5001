@@ -2,6 +2,7 @@ import flet as ft
 import requests
 import hashlib
 from datetime import datetime
+import asyncio  # 新增：用于在异步网络请求时刷新 UI
 
 # ==========================================
 # 加密工具
@@ -37,9 +38,9 @@ def mask_to_lte_bands(mask_str):
     return bands
 
 # ==========================================
-# 主程序
+# 主程序 (已升级为异步 async def)
 # ==========================================
-def main(page: ft.Page):
+async def main(page: ft.Page):
     page.title = "MU5001"
     page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
     page.padding = 15
@@ -413,9 +414,9 @@ def main(page: ft.Page):
         page.update()
 
     # ==============================================
-    # 登录逻辑 (包含记住密码与异常清除)
+    # 登录逻辑 (已升级为异步 async def)
     # ==============================================
-    def login_click(e=None):
+    async def login_click(e=None):
         ip = ip_input.value
         pwd = pwd_input.value
         if not pwd:
@@ -428,6 +429,9 @@ def main(page: ft.Page):
         login_status.value = "正在验证登录..."
         login_status.color = ft.Colors.GREY_700
         page.update()
+        
+        # 强制释放事件循环，确保 "正在验证登录..." 的 UI 能够成功渲染
+        await asyncio.sleep(0.01) 
         
         try:
             s = requests.Session()
@@ -446,11 +450,11 @@ def main(page: ft.Page):
             if str(res.get("result", "")) in ["0", "4"]:
                 # 登录成功：如果勾选了记住密码，存入本地；否则清除本地记录
                 if remember_cb.value:
-                    page.client_storage.set("saved_ip", ip)
-                    page.client_storage.set("saved_pwd", pwd)
+                    await page.shared_preferences.set("saved_ip", ip)
+                    await page.shared_preferences.set("saved_pwd", pwd)
                 else:
-                    page.client_storage.remove("saved_ip")
-                    page.client_storage.remove("saved_pwd")
+                    await page.shared_preferences.remove("saved_ip")
+                    await page.shared_preferences.remove("saved_pwd")
                     
                 app_state.update({"session": s, "ip": ip, "rd0": rd0, "rd1": rd1, "password": pwd})
                 login_status.value = "解锁开发者权限..."
@@ -461,16 +465,16 @@ def main(page: ft.Page):
                 refresh_data()
             else:
                 # 密码错误：清除保存的密码，停止自动登录
-                page.client_storage.remove("saved_ip")
-                page.client_storage.remove("saved_pwd")
+                await page.shared_preferences.remove("saved_ip")
+                await page.shared_preferences.remove("saved_pwd")
                 remember_cb.value = False
                 pwd_input.value = "" # 清空错误密码
                 login_status.value = "❌ 密码错误或账号锁定"
                 login_status.color = ft.Colors.RED
         except Exception:
-            # 网络连接失败：清除保存的密码，停止自动登录
-            page.client_storage.remove("saved_ip")
-            page.client_storage.remove("saved_pwd")
+            # 网络连接失败：彻底修复此处残留的 client_storage 问题
+            await page.shared_preferences.remove("saved_ip")
+            await page.shared_preferences.remove("saved_pwd")
             remember_cb.value = False
             login_status.value = "❌ 连接失败，检查地址和网络"
             login_status.color = ft.Colors.RED
@@ -483,9 +487,9 @@ def main(page: ft.Page):
     # ==============================================
     title = ft.Text("MU5001", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700, text_align=ft.TextAlign.CENTER)
     
-    # 初始化读取本地存储的登录信息
-    saved_ip = page.client_storage.get("saved_ip")
-    saved_pwd = page.client_storage.get("saved_pwd")
+    # 异步读取本地存储信息
+    saved_ip = await page.shared_preferences.get("saved_ip")
+    saved_pwd = await page.shared_preferences.get("saved_pwd")
     
     ip_input = ft.TextField(label="管理地址", value=saved_ip if saved_ip else "http://192.168.0.1")
     pwd_input = ft.TextField(label="管理员密码", password=True, can_reveal_password=True, value=saved_pwd if saved_pwd else "")
@@ -576,7 +580,8 @@ def main(page: ft.Page):
 
     week_days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     week_cbs = [ft.Checkbox(label=w, value=False, data=str(i+1)) for i, w in enumerate(week_days)]
-    row_weeks = ft.Row(week_cbs, wrap=True, spacing=5, run_spacing=0)
+    week_containers = [ft.Container(content=cb, width=80, padding=0, margin=0) for cb in week_cbs]
+    row_weeks = ft.Row(week_containers, wrap=True, spacing=5, run_spacing=0)
 
     rb_interval = ft.Dropdown(label="间隔天数", options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], value="1")
 
@@ -718,8 +723,8 @@ def main(page: ft.Page):
     # ----------------------------------------------
     # 自动登录触发逻辑
     # ----------------------------------------------
-    # 必须在 page.add() 渲染完 UI 之后调用，否则 Flet 会报错找不到控件
     if saved_pwd and saved_ip:
-        login_click(None)
+        await login_click(None)
 
-ft.app(target=main)
+# 已修复：将弃用的 ft.app(target=main) 修改为最新版支持的 ft.run(main)
+ft.run(main)

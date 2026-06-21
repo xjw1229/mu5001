@@ -272,8 +272,8 @@ async def main(page: ft.Page):
             # 网速与流量更新
             tx_speed = res.get("realtime_tx_thrpt", 0)
             rx_speed = res.get("realtime_rx_thrpt", 0)
-            txt_tx_speed.value = f"上传: {format_bytes(tx_speed)}/s"
-            txt_rx_speed.value = f"下载: {format_bytes(rx_speed)}/s"
+            txt_tx_speed.value = f"上传速度: {format_bytes(tx_speed)}/s"
+            txt_rx_speed.value = f"下载速度: {format_bytes(rx_speed)}/s"
 
             rt_tx_bytes = float(res.get("realtime_tx_bytes", 0))
             rt_rx_bytes = float(res.get("realtime_rx_bytes", 0))
@@ -565,8 +565,8 @@ async def main(page: ft.Page):
     # ----------------------------------------------
     # 网速与流量
     # ----------------------------------------------
-    txt_tx_speed = ft.Text("上传: --", size=14)
-    txt_rx_speed = ft.Text("下载: --", size=14)
+    txt_tx_speed = ft.Text("上传速度: --", size=14)
+    txt_rx_speed = ft.Text("下载速度: --", size=14)
     txt_traffic_rt = ft.Text("本次流量: --", size=14)
     txt_traffic_mo = ft.Text("当月流量: --", size=14)
 

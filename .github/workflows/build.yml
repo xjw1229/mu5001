@@ -1,5 +1,11 @@
 name: Build Android APK
-on: [push]
+
+on:
+  push:
+    paths-ignore:
+      - 'README.md'
+      - 'read.me'
+      - '**/*.md'  # 这一行会忽略所有文件夹下的 Markdown 文件，你可以根据需要保留或删除
 
 jobs:
   build:

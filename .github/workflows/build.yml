@@ -5,7 +5,7 @@ on:
     paths-ignore:
       - 'README.md'
       - 'read.me'
-      - '**/*.md'  # 这一行会忽略所有文件夹下的 Markdown 文件，你可以根据需要保留或删除
+      - '**/*.md'  # 这一行会忽略所有文件夹下的 Markdown 文件
 
 jobs:
   build:
@@ -25,7 +25,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
           
-      # 💡 已经删除了原来“配置 Flutter”的步骤，交给 Flet 自己去下正确的版本
+      # 已经删除Flutter，由 Flet下载正确的版本
           
       - name: 安装依赖
         run: |

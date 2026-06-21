@@ -733,4 +733,4 @@ async def main(page: ft.Page):
     if saved_pwd and saved_ip:
         await login_click(None)
 
-ft.run(main)
+ft.app(main)

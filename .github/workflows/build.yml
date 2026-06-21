@@ -19,11 +19,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
           
-      - name: 配置 Flutter (锁定兼容版本)
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.24.3'
-          channel: 'stable'
+      # 💡 已经删除了原来“配置 Flutter”的步骤，交给 Flet 自己去下正确的版本
           
       - name: 安装依赖
         run: |
@@ -31,8 +27,8 @@ jobs:
           pip install -r requirements.txt
           
       - name: 构建安卓 APK
-        # 这里做了修改，将 org 和 project 分开指定
-        run: flet build apk --org com.zte --project mu5001
+        # 💡 在前面加上 yes | ，自动回答 [y/n] 的终端提问，防止流水线卡死报错
+        run: yes | flet build apk --org com.zte --project mu5001
         
       - name: 上传 APK
         uses: actions/upload-artifact@v4

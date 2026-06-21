@@ -726,7 +726,7 @@ async def main(page: ft.Page):
     btn_cell_unlock = ft.ElevatedButton("清除锁定", on_click=cell_unlock_click, height=45, color=ft.Colors.RED, expand=True)
     btn_cell_reboot = ft.ElevatedButton("重启设备", on_click=reboot_click, height=45, color=ft.Colors.RED, expand=True)
 
-    btn_refresh = ft.ElevatedButton("刷新包含控件的全部数据", icon=ft.Icons.REFRESH, on_click=refresh_data, expand=True)
+    btn_refresh = ft.ElevatedButton("刷新数据", icon=ft.Icons.REFRESH, on_click=refresh_data, expand=True)
     btn_reboot_top = ft.ElevatedButton("重启设备", icon=ft.Icons.POWER_SETTINGS_NEW, color=ft.Colors.RED, on_click=reboot_click, expand=True)
 
     setting_card = ft.Container(

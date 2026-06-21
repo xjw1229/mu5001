@@ -5,7 +5,7 @@ from datetime import datetime
 import asyncio
 
 # ==========================================
-# 加密工具
+# 通用工具
 # ==========================================
 def get_md5(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest().lower()
@@ -16,6 +16,19 @@ def get_sha256_upper(text):
 def calculate_ad(rd0, rd1, rd_value):
     step1 = get_md5(rd0 + rd1)
     return get_md5(step1 + rd_value)
+
+def format_bytes(size):
+    try:
+        size = float(size)
+    except (ValueError, TypeError):
+        return "0 B"
+    if size <= 0: return "0 B"
+    power_labels = ['B', 'KB', 'MB', 'GB', 'TB']
+    n = 0
+    while size >= 1024 and n < len(power_labels) - 1:
+        size /= 1024
+        n += 1
+    return f"{size:.2f} {power_labels[n]}"
 
 # ==========================================
 # 频段掩码工具
@@ -107,7 +120,7 @@ async def main(page: ft.Page):
         elif band_id in nr_nsa_selected: nr_nsa_selected.remove(band_id)
 
     # ==============================================
-    # 通用工具
+    # 核心交互工具
     # ==============================================
     def get_latest_ld():
         try:
@@ -135,61 +148,18 @@ async def main(page: ft.Page):
         return False
 
     # ==============================================
-    # 刷新设备数据
+    # 全量数据刷新
     # ==============================================
     def refresh_data(e=None):
         if not app_state["session"]: return
         status_text.value = "正在读取设备信息..."
         page.update()
         try:
-            cmd = "battery_value,network_type,signalbar,wan_ipaddr,sysIdleTimeToSleep,lte_band_lock,nr5g_pci,nr5g_action_channel,nr5g_action_band,Z5g_rsrp,Z5g_SINR,nr5g_cell_id,pm_sensor_mdm,battery_temp,pm_sensor_pa1,reboot_schedule_enable,reboot_schedule_mode,reboot_hour1,reboot_min1,reboot_timeframe_hours1,reboot_dow,reboot_dod"
+            cmd = "sysIdleTimeToSleep,lte_band_lock,nr5g_sa_band_lock,nr5g_nsa_band_lock,nr5g_cell_lock,reboot_schedule_enable,reboot_schedule_mode,reboot_hour1,reboot_min1,reboot_timeframe_hours1,reboot_dow,reboot_dod"
             url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={cmd}&multi_data=1"
             res = app_state["session"].get(url, timeout=5).json()
 
-            net_type = res.get('network_type', '?')
-            txt_network.value = f"网络: {net_type}"
-
-            txt_battery.value = f"电量: {res.get('battery_value', '?')}%"
-            txt_wan_ip.value = f"WAN IP: {res.get('wan_ipaddr', '未分配')}"
-
-            s = app_state["session"]
-            ip_addr = app_state["ip"]
-            wifi_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=station_list").json()
-            lan_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=lan_station_list")
-            wifi_devs = wifi_ret.get("station_list", [])
-            try:
-                lan_devs = lan_ret.json().get("lan_station_list", [])
-            except:
-                lan_devs = []
-            mac_set = set()
-            for dev in wifi_devs:
-                mac = dev.get("mac_addr", "").strip().upper()
-                if mac: mac_set.add(mac)
-            for dev in lan_devs:
-                mac = dev.get("mac_addr", "").strip().upper()
-                if mac: mac_set.add(mac)
-            txt_users.value = f"接入设备: {len(mac_set)} 台"
-
-            freq_5g = res.get("nr5g_action_channel", "").strip()
-            raw_pci_5g = res.get("nr5g_pci", "").strip()
-            try:
-                pci_5g = str(int(raw_pci_5g, 16)) if raw_pci_5g else ""
-            except ValueError:
-                pci_5g = raw_pci_5g
-            rsrp_5g = res.get("Z5g_rsrp", "").strip()
-            sinr_5g = res.get("Z5g_SINR", "").strip()
-            txt_5g_freq.value = f"5G 频点: {freq_5g if freq_5g else '--'}"
-            txt_5g_pci.value = f"5G PCI: {pci_5g if pci_5g else '--'}"
-            txt_5g_rsrp.value = f"5G 信号强度: {rsrp_5g if rsrp_5g else '--'} dBm"
-            txt_5g_sinr.value = f"5G 信噪比: {sinr_5g if sinr_5g else '--'} dB"
-
-            temp_bat = res.get("battery_temp", "").strip()
-            temp_mdm = res.get("pm_sensor_mdm", "").strip()
-            temp_pa1 = res.get("pm_sensor_pa1", "").strip()
-            txt_temp_bat.value = f"电池温度: {temp_bat if temp_bat and temp_bat != '0' else '--'}℃"
-            txt_temp_mdm.value = f"4G Modem: {temp_mdm if temp_mdm and temp_mdm != '0' else '--'}℃"
-            txt_temp_pa.value  = f"PA: {temp_pa1 if temp_pa1 and temp_pa1 != '0' else '--'}℃"
-
+            # WIFI休眠与高级设置
             val = res.get("sysIdleTimeToSleep", "10")
             if val in [o.key for o in wifi_sleep.options]: wifi_sleep.value = val
 
@@ -232,39 +202,111 @@ async def main(page: ft.Page):
                     cell_earfcn.value = ""
                     cell_band.value = "1"
                     cell_scs.value = "15"
-            except Exception as e:
-                pass
+            except Exception as e: pass
 
             try:
                 rb_en = res.get("reboot_schedule_enable", "0")
                 reboot_enable.value = (rb_en == "1")
-
                 rb_mode = res.get("reboot_schedule_mode", "1")
-                if rb_mode in ["1", "2"]:
-                    reboot_mode.value = rb_mode
-
+                if rb_mode in ["1", "2"]: reboot_mode.value = rb_mode
                 rb_time_hr.value = res.get("reboot_hour1", "02").zfill(2)
                 rb_time_min.value = res.get("reboot_min1", "00").zfill(2)
                 rb_buffer.value = res.get("reboot_timeframe_hours1", "02").zfill(2)
-
                 rb_dow = res.get("reboot_dow", "")
                 selected_weeks = [w.strip() for w in rb_dow.split(",") if w.strip()]
-                for cb in week_cbs:
-                    cb.value = cb.data in selected_weeks
-
+                for cb in week_cbs: cb.value = cb.data in selected_weeks
                 rb_dod = res.get("reboot_dod", "1")
-                if any(o.key == rb_dod for o in rb_interval.options):
-                    rb_interval.value = rb_dod
-            except Exception as e:
-                pass
+                if any(o.key == rb_dod for o in rb_interval.options): rb_interval.value = rb_dod
+            except Exception as e: pass
 
-            txt_local_time.value = f"设备当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
+            # 抓取接入设备
+            s = app_state["session"]
+            ip_addr = app_state["ip"]
+            wifi_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=station_list").json()
+            lan_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=lan_station_list")
+            wifi_devs = wifi_ret.get("station_list", [])
+            try: lan_devs = lan_ret.json().get("lan_station_list", [])
+            except: lan_devs = []
+            mac_set = set()
+            for dev in wifi_devs:
+                mac = dev.get("mac_addr", "").strip().upper()
+                if mac: mac_set.add(mac)
+            for dev in lan_devs:
+                mac = dev.get("mac_addr", "").strip().upper()
+                if mac: mac_set.add(mac)
+            txt_users.value = f"接入设备: {len(mac_set)} 台"
+
             status_text.value = "✅ 数据读取成功" + (" | 开发者已解锁" if app_state["dev_unlocked"] else " | ⚠️ 开发者未解锁")
             status_text.color = ft.Colors.GREEN if app_state["dev_unlocked"] else ft.Colors.ORANGE
+            
+            # 手动刷新也会立刻更新一次面板的纯展示数据
+            fetch_realtime_stats()
         except Exception:
             status_text.value = "⚠️ 读取失败，请检查连接"
             status_text.color = ft.Colors.RED
-        page.update()
+            page.update()
+
+    # ==============================================
+    # 纯展示数据 1秒自动刷新拉取专用
+    # ==============================================
+    def fetch_realtime_stats():
+        if not app_state["session"]: return
+        try:
+            cmd = "battery_value,battery_charging,network_type,wan_ipaddr,Z5g_rsrp,Z5g_SINR,nr5g_pci,nr5g_action_channel,pm_sensor_mdm,battery_temp,pm_sensor_pa1,realtime_tx_thrpt,realtime_rx_thrpt,realtime_tx_bytes,realtime_rx_bytes,monthly_tx_bytes,monthly_rx_bytes"
+            url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={cmd}&multi_data=1"
+            res = app_state["session"].get(url, timeout=2).json()
+
+            txt_network.value = f"网络: {res.get('network_type', '?')}"
+            
+            # 电池逻辑
+            battery_val = str(res.get('battery_value', '?'))
+            charging_flag = str(res.get('battery_charging', ''))
+            if charging_flag in ['1', '2']:
+                charge_str = "充电中"
+            else:
+                charge_str = "未充电"
+            txt_battery.value = f"电量: {battery_val}% ({charge_str})"
+            
+            txt_wan_ip.value = f"WAN IP: {res.get('wan_ipaddr', '未分配')}"
+
+            # 网速与流量更新
+            tx_speed = res.get("realtime_tx_thrpt", 0)
+            rx_speed = res.get("realtime_rx_thrpt", 0)
+            txt_tx_speed.value = f"上传: {format_bytes(tx_speed)}/s"
+            txt_rx_speed.value = f"下载: {format_bytes(rx_speed)}/s"
+
+            rt_tx_bytes = float(res.get("realtime_tx_bytes", 0))
+            rt_rx_bytes = float(res.get("realtime_rx_bytes", 0))
+            mo_tx_bytes = float(res.get("monthly_tx_bytes", 0))
+            mo_rx_bytes = float(res.get("monthly_rx_bytes", 0))
+            txt_traffic_rt.value = f"本次流量: {format_bytes(rt_tx_bytes + rt_rx_bytes)}"
+            txt_traffic_mo.value = f"当月流量: {format_bytes(mo_tx_bytes + mo_rx_bytes)}"
+
+            # 信号与温度更新
+            freq_5g = res.get("nr5g_action_channel", "").strip()
+            raw_pci_5g = res.get("nr5g_pci", "").strip()
+            try: pci_5g = str(int(raw_pci_5g, 16)) if raw_pci_5g else ""
+            except: pci_5g = raw_pci_5g
+            txt_5g_freq.value = f"5G 频点: {freq_5g if freq_5g else '--'}"
+            txt_5g_pci.value = f"5G PCI: {pci_5g if pci_5g else '--'}"
+            txt_5g_rsrp.value = f"5G 信号强度: {res.get('Z5g_rsrp', '--')} dBm"
+            txt_5g_sinr.value = f"5G 信噪比: {res.get('Z5g_SINR', '--')} dB"
+
+            txt_temp_bat.value = f"电池温度: {res.get('battery_temp', '--')}℃"
+            txt_temp_mdm.value = f"4G Modem: {res.get('pm_sensor_mdm', '--')}℃"
+            txt_temp_pa.value  = f"PA: {res.get('pm_sensor_pa1', '--')}℃"
+
+            txt_local_time.value = f"设备当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
+            page.update()
+        except Exception:
+            pass # 静默处理
+
+    # 后台异步任务：每秒轮询一次纯展示数据
+    async def auto_refresh_task():
+        while True:
+            await asyncio.sleep(1)
+            if app_state["session"] and main_view.visible:
+                fetch_realtime_stats()
 
     # ==============================================
     # 动作按钮执行
@@ -520,6 +562,21 @@ async def main(page: ft.Page):
     txt_wan_ip  = ft.Text("WAN IP: --", size=14)
     txt_users   = ft.Text("接入设备: --", size=14)
 
+    # ----------------------------------------------
+    # 网速与流量
+    # ----------------------------------------------
+    txt_tx_speed = ft.Text("上传: --", size=14)
+    txt_rx_speed = ft.Text("下载: --", size=14)
+    txt_traffic_rt = ft.Text("本次流量: --", size=14)
+    txt_traffic_mo = ft.Text("当月流量: --", size=14)
+
+    col_speed = ft.Column([txt_tx_speed, txt_rx_speed], spacing=4)
+    row_speed = build_status_row("🚀", col_speed)
+
+    col_traffic = ft.Column([txt_traffic_rt, txt_traffic_mo], spacing=4)
+    row_traffic = build_status_row("📊", col_traffic)
+    # ----------------------------------------------
+
     txt_5g_freq = ft.Text("5G 频点: --", size=13, color=ft.Colors.GREY_800)
     txt_5g_pci  = ft.Text("5G PCI: --", size=13, color=ft.Colors.GREY_800)
     txt_5g_rsrp = ft.Text("5G 信号强度: --", size=13, color=ft.Colors.GREY_800)
@@ -547,6 +604,8 @@ async def main(page: ft.Page):
     status_card = ft.Container(
         content=ft.Column([
             row_battery, row_network, row_wan_ip, row_users, 
+            ft.Divider(height=5),
+            row_speed, row_traffic,
             ft.Divider(height=5),
             row_5g_freq, row_5g_pci, row_5g_rsrp, row_5g_sinr, 
             ft.Divider(height=5),
@@ -576,7 +635,6 @@ async def main(page: ft.Page):
     week_days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     week_cbs = [ft.Checkbox(label=w, value=False, data=str(i+1)) for i, w in enumerate(week_days)]
     
-    # 真正的自适应网格布局：手机一行3个，平板一行4个，宽屏一行6-7个
     row_weeks = ft.ResponsiveRow(
         controls=[
             ft.Container(
@@ -668,7 +726,7 @@ async def main(page: ft.Page):
     btn_cell_unlock = ft.ElevatedButton("清除锁定", on_click=cell_unlock_click, height=45, color=ft.Colors.RED, expand=True)
     btn_cell_reboot = ft.ElevatedButton("重启设备", on_click=reboot_click, height=45, color=ft.Colors.RED, expand=True)
 
-    btn_refresh = ft.ElevatedButton("刷新设备数据", icon=ft.Icons.REFRESH, on_click=refresh_data, expand=True)
+    btn_refresh = ft.ElevatedButton("刷新包含控件的全部数据", icon=ft.Icons.REFRESH, on_click=refresh_data, expand=True)
     btn_reboot_top = ft.ElevatedButton("重启设备", icon=ft.Icons.POWER_SETTINGS_NEW, color=ft.Colors.RED, on_click=reboot_click, expand=True)
 
     setting_card = ft.Container(
@@ -726,6 +784,9 @@ async def main(page: ft.Page):
     )
 
     page.add(login_view, main_view)
+    
+    # 挂载 1 秒轮询任务到 asyncio 的事件循环中
+    asyncio.create_task(auto_refresh_task())
 
     # ----------------------------------------------
     # 自动登录触发逻辑

@@ -40,10 +40,9 @@ def mask_to_lte_bands(mask_str):
 # 主程序
 # ==========================================
 def main(page: ft.Page):
-    page.title = "ZTE高级管家"
-    page.window_width = 420
-    page.window_height = 980
-    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+    page.title = "MU5001"
+    page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
+    page.padding = 15
     page.theme_mode = ft.ThemeMode.LIGHT
     page.scroll = ft.ScrollMode.AUTO
 
@@ -69,15 +68,7 @@ def main(page: ft.Page):
     sa_checkboxes = {}
     nsa_checkboxes = {}
 
-    # ==============================================
-    # 尺寸核心控制区 (安全兼容版)
-    # ==============================================
-    UI_WIDTH = 400       # 外层组件和卡片总宽度
-    INNER_WIDTH = 370    # 卡片内部组件可用宽度
-    CELL_WIDTH = 74      # 复选框单元格绝对宽度 (74 * 5 = 370，一行5个完美对齐)
-
-    LABEL_W = 80         # 表单左侧标签宽度
-    INPUT_W = 280        # 表单右侧输入框宽度 (80 + 280 + 10间距 = 370)
+    LABEL_W = 75 # 表单左侧标签适应宽度
 
     # ==============================================
     # 严格对齐网格生成器
@@ -92,14 +83,9 @@ def main(page: ft.Page):
                 on_change=on_change_handler,
             )
             checkboxes_dict[b] = cb
-            controls.append(ft.Container(content=cb, width=CELL_WIDTH))
+            controls.append(ft.Container(content=cb, width=72, padding=0, margin=0))
 
-        rows = []
-        for i in range(0, len(controls), 5):
-            chunk = controls[i:i+5]
-            rows.append(ft.Row(chunk, spacing=0))
-        
-        return ft.Column(rows, spacing=0)
+        return ft.Row(controls, wrap=True, spacing=5, run_spacing=0)
 
     # ==============================================
     # 频段选择事件处理
@@ -159,19 +145,12 @@ def main(page: ft.Page):
             url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={cmd}&multi_data=1"
             res = app_state["session"].get(url, timeout=5).json()
 
-            # 网络状态
             net_type = res.get('network_type', '?')
-            band_5g = res.get("nr5g_action_band", "").strip()
-            if band_5g:
-                display_band = band_5g if band_5g.lower().startswith(('n', 'b')) else f"n{band_5g}"
-                txt_network.value = f"网络: {net_type} ({display_band})"
-            else:
-                txt_network.value = f"网络: {net_type}"
+            txt_network.value = f"网络: {net_type}"
 
             txt_battery.value = f"电量: {res.get('battery_value', '?')}%"
-            txt_wan_ip.value = f"外网IP: {res.get('wan_ipaddr', '未分配')}"
+            txt_wan_ip.value = f"WAN IP: {res.get('wan_ipaddr', '未分配')}"
 
-            # 接入设备去重
             s = app_state["session"]
             ip_addr = app_state["ip"]
             wifi_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=station_list").json()
@@ -190,7 +169,6 @@ def main(page: ft.Page):
                 if mac: mac_set.add(mac)
             txt_users.value = f"接入设备: {len(mac_set)} 台"
 
-            # 5G 信号
             freq_5g = res.get("nr5g_action_channel", "").strip()
             raw_pci_5g = res.get("nr5g_pci", "").strip()
             try:
@@ -204,7 +182,6 @@ def main(page: ft.Page):
             txt_5g_rsrp.value = f"5G 信号强度: {rsrp_5g if rsrp_5g else '--'} dBm"
             txt_5g_sinr.value = f"5G 信噪比: {sinr_5g if sinr_5g else '--'} dB"
 
-            # 温度
             temp_bat = res.get("battery_temp", "").strip()
             temp_mdm = res.get("pm_sensor_mdm", "").strip()
             temp_pa1 = res.get("pm_sensor_pa1", "").strip()
@@ -212,7 +189,6 @@ def main(page: ft.Page):
             txt_temp_mdm.value = f"4G Modem: {temp_mdm if temp_mdm and temp_mdm != '0' else '--'}℃"
             txt_temp_pa.value  = f"PA: {temp_pa1 if temp_pa1 and temp_pa1 != '0' else '--'}℃"
 
-            # 高级设置 - 休眠和锁频
             val = res.get("sysIdleTimeToSleep", "10")
             if val in [o.key for o in wifi_sleep.options]: wifi_sleep.value = val
 
@@ -238,7 +214,6 @@ def main(page: ft.Page):
             except: pass
             for b, cb in nsa_checkboxes.items(): cb.value = (b in nr_nsa_selected)
 
-            # 锁小区
             try:
                 cell_lock_res = app_state["session"].get(f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd=nr5g_cell_lock").json()
                 cell_lock_val = cell_lock_res.get("nr5g_cell_lock", "")
@@ -259,7 +234,6 @@ def main(page: ft.Page):
             except Exception as e:
                 pass
 
-            # 定时重启读取
             try:
                 rb_en = res.get("reboot_schedule_enable", "0")
                 reboot_enable.value = (rb_en == "1")
@@ -281,7 +255,7 @@ def main(page: ft.Page):
                 if any(o.key == rb_dod for o in rb_interval.options):
                     rb_interval.value = rb_dod
             except Exception as e:
-                print("解析定时重启配置异常:", e)
+                pass
 
             txt_local_time.value = f"设备当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
             status_text.value = "✅ 数据读取成功" + (" | 开发者已解锁" if app_state["dev_unlocked"] else " | ⚠️ 开发者未解锁")
@@ -406,9 +380,6 @@ def main(page: ft.Page):
             status_text.color = ft.Colors.RED
         page.update()
 
-    # ----------------------------------------------
-    # 修复版：定时重启保存逻辑
-    # ----------------------------------------------
     def save_schedule_reboot(e):
         status_text.value = "下发定时重启配置..."
         status_text.color = ft.Colors.ORANGE
@@ -432,7 +403,6 @@ def main(page: ft.Page):
             "reboot_dod": rb_interval.value
         }
 
-        # 核心修复：使用了你抓包得到的 FIX_TIME_REBOOT_SCHEDULE
         ok = execute_post("FIX_TIME_REBOOT_SCHEDULE", payload)
         if ok:
             status_text.value = "✅ 定时重启配置已保存"
@@ -442,11 +412,10 @@ def main(page: ft.Page):
             status_text.color = ft.Colors.RED
         page.update()
 
-
     # ==============================================
-    # 登录逻辑
+    # 登录逻辑 (包含记住密码与异常清除)
     # ==============================================
-    def login_click(e):
+    def login_click(e=None):
         ip = ip_input.value
         pwd = pwd_input.value
         if not pwd:
@@ -454,10 +423,12 @@ def main(page: ft.Page):
             login_status.color = ft.Colors.RED
             page.update()
             return
+            
         login_btn.disabled = True
-        login_status.value = "登录中..."
+        login_status.value = "正在验证登录..."
         login_status.color = ft.Colors.GREY_700
         page.update()
+        
         try:
             s = requests.Session()
             s.headers.update({"User-Agent": "Mozilla/5.0", "Referer": f"{ip}/index.html"})
@@ -471,7 +442,16 @@ def main(page: ft.Page):
             res = s.post(f"{ip}/goform/goform_set_cmd_process", data={
                 "isTest": "false", "goformId": "LOGIN", "password": pwd_enc, "AD": calculate_ad(rd0, rd1, rd_val)
             }).json()
+            
             if str(res.get("result", "")) in ["0", "4"]:
+                # 登录成功：如果勾选了记住密码，存入本地；否则清除本地记录
+                if remember_cb.value:
+                    page.client_storage.set("saved_ip", ip)
+                    page.client_storage.set("saved_pwd", pwd)
+                else:
+                    page.client_storage.remove("saved_ip")
+                    page.client_storage.remove("saved_pwd")
+                    
                 app_state.update({"session": s, "ip": ip, "rd0": rd0, "rd1": rd1, "password": pwd})
                 login_status.value = "解锁开发者权限..."
                 page.update()
@@ -480,26 +460,53 @@ def main(page: ft.Page):
                 main_view.visible = True
                 refresh_data()
             else:
+                # 密码错误：清除保存的密码，停止自动登录
+                page.client_storage.remove("saved_ip")
+                page.client_storage.remove("saved_pwd")
+                remember_cb.value = False
+                pwd_input.value = "" # 清空错误密码
                 login_status.value = "❌ 密码错误或账号锁定"
                 login_status.color = ft.Colors.RED
         except Exception:
-            login_status.value = "❌ 连接失败，检查地址"
+            # 网络连接失败：清除保存的密码，停止自动登录
+            page.client_storage.remove("saved_ip")
+            page.client_storage.remove("saved_pwd")
+            remember_cb.value = False
+            login_status.value = "❌ 连接失败，检查地址和网络"
             login_status.color = ft.Colors.RED
+            
         login_btn.disabled = False
         page.update()
 
     # ==============================================
     # UI 控件构建
     # ==============================================
-    title = ft.Text("ZTE 高级管家", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700)
-    ip_input = ft.TextField(label="管理地址", value="http://192.168.0.1", width=UI_WIDTH)
-    pwd_input = ft.TextField(label="管理员密码", password=True, can_reveal_password=True, width=UI_WIDTH)
-    login_status = ft.Text("输入账号密码登录", color=ft.Colors.GREY_500)
-    login_btn = ft.ElevatedButton("一键登录", on_click=login_click, width=UI_WIDTH, height=45)
+    title = ft.Text("MU5001", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700, text_align=ft.TextAlign.CENTER)
+    
+    # 初始化读取本地存储的登录信息
+    saved_ip = page.client_storage.get("saved_ip")
+    saved_pwd = page.client_storage.get("saved_pwd")
+    
+    ip_input = ft.TextField(label="管理地址", value=saved_ip if saved_ip else "http://192.168.0.1")
+    pwd_input = ft.TextField(label="管理员密码", password=True, can_reveal_password=True, value=saved_pwd if saved_pwd else "")
+    remember_cb = ft.Checkbox(label="记住密码并自动登录", value=bool(saved_pwd)) # 如果有存密码，默认勾选
+    
+    login_status = ft.Text("输入账号密码登录", color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
+    login_btn = ft.ElevatedButton("一键登录", on_click=login_click, height=45)
     
     login_view = ft.Column(
-        [ft.Container(height=40), title, ft.Container(height=20), ip_input, pwd_input, ft.Container(height=8), login_status, login_btn],
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER
+        [
+            ft.Container(height=40), 
+            title, 
+            ft.Container(height=20), 
+            ip_input, 
+            pwd_input, 
+            remember_cb, # 加入复选框
+            ft.Container(height=8), 
+            login_status, 
+            login_btn
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH
     )
 
     def build_status_row(icon, text_control):
@@ -511,7 +518,7 @@ def main(page: ft.Page):
 
     txt_battery = ft.Text("电量: --", size=14)
     txt_network = ft.Text("网络: --", size=14)
-    txt_wan_ip  = ft.Text("外网IP: --", size=14)
+    txt_wan_ip  = ft.Text("WAN IP: --", size=14)
     txt_users   = ft.Text("接入设备: --", size=14)
 
     txt_5g_freq = ft.Text("5G 频点: --", size=13, color=ft.Colors.GREY_800)
@@ -546,12 +553,12 @@ def main(page: ft.Page):
             ft.Divider(height=5),
             row_temps,
             ft.Divider(height=8), status_text
-        ], spacing=6),
-        padding=15, bgcolor=ft.Colors.BLUE_50, border_radius=10, width=UI_WIDTH
+        ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+        padding=15, bgcolor=ft.Colors.BLUE_50, border_radius=10
     )
 
     # ----------------------------------------------
-    # ⏱️ 定时重启卡片构建 (无脑暴力显示版，彻底兼容老版本 Flet)
+    # ⏱️ 定时重启卡片构建
     # ----------------------------------------------
     txt_local_time = ft.Text("设备当前时间: --", size=12, color=ft.Colors.GREY_600)
     reboot_enable = ft.Switch(label="启用定时重启功能", value=False)
@@ -559,24 +566,21 @@ def main(page: ft.Page):
     reboot_mode = ft.Dropdown(
         label="重启模式 (选择后请填写下方对应的配置)",
         options=[ft.dropdown.Option("1", "1 - 按周自动重启"), ft.dropdown.Option("2", "2 - 按间隔天数")],
-        value="1",
-        width=INNER_WIDTH
+        value="1"
     )
 
-    rb_time_hr = ft.TextField(label="时", width=70, value="02")
-    rb_time_min = ft.TextField(label="分", width=70, value="00")
-    rb_buffer = ft.TextField(label="缓冲时间", width=90, value="02")
-    row_time = ft.Row([rb_time_hr, ft.Text(":", size=20, weight=ft.FontWeight.BOLD), rb_time_min, rb_buffer], spacing=10)
+    rb_time_hr = ft.TextField(label="时", expand=1, value="02")
+    rb_time_min = ft.TextField(label="分", expand=1, value="00")
+    rb_buffer = ft.TextField(label="缓冲时间", expand=2, value="02")
+    row_time = ft.Row([rb_time_hr, ft.Text(":", size=20, weight=ft.FontWeight.BOLD), rb_time_min, rb_buffer], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-    # 暴力将星期拆分为两行，防止被挤出屏幕
     week_days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     week_cbs = [ft.Checkbox(label=w, value=False, data=str(i+1)) for i, w in enumerate(week_days)]
-    row_weeks_1 = ft.Row(week_cbs[:4], spacing=0)
-    row_weeks_2 = ft.Row(week_cbs[4:], spacing=0)
+    row_weeks = ft.Row(week_cbs, wrap=True, spacing=5, run_spacing=0)
 
-    rb_interval = ft.Dropdown(label="间隔天数", options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], value="1", width=120)
+    rb_interval = ft.Dropdown(label="间隔天数", options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], value="1")
 
-    btn_save_reboot = ft.ElevatedButton("保存重启规则", on_click=save_schedule_reboot, width=INNER_WIDTH)
+    btn_save_reboot = ft.ElevatedButton("保存重启规则", on_click=save_schedule_reboot)
 
     reboot_card = ft.Container(
         content=ft.Column([
@@ -588,73 +592,72 @@ def main(page: ft.Page):
             reboot_mode,
             ft.Divider(height=5),
             
-            # 不再隐藏任何组件，全部常驻显示！通过文字提示用户
-            ft.Text("🔹 选项A: 按周触发 (仅在重启模式选 1 时生效)", size=13, color=ft.Colors.BLUE_700, weight=ft.FontWeight.BOLD),
-            row_weeks_1,
-            row_weeks_2,
+            ft.Text("🔹 选项1: 按周触发 (仅在重启模式选 1 时生效)", size=13, color=ft.Colors.BLUE_700, weight=ft.FontWeight.BOLD),
+            row_weeks,
             
             ft.Container(height=5),
             
-            ft.Text("🔹 选项B: 间隔触发 (仅在重启模式选 2 时生效)", size=13, color=ft.Colors.ORANGE_700, weight=ft.FontWeight.BOLD),
+            ft.Text("🔹 选项2: 间隔触发 (仅在重启模式选 2 时生效)", size=13, color=ft.Colors.ORANGE_700, weight=ft.FontWeight.BOLD),
             rb_interval,
             
             ft.Container(height=10),
             btn_save_reboot
-        ], spacing=10),
-        padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10, width=UI_WIDTH
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+        padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10
     )
 
     # ----------------------------------------------
-    # 原有的高级设置卡片
+    # 高级设置卡片
     # ----------------------------------------------
-    wifi_sleep = ft.Dropdown(label="WiFi空闲休眠", width=INNER_WIDTH, options=[
+    wifi_sleep = ft.Dropdown(label="WiFi空闲休眠", options=[
         ft.dropdown.Option("0", "永不休眠"), ft.dropdown.Option("5", "5分钟"),
         ft.dropdown.Option("10", "10分钟"), ft.dropdown.Option("20", "20分钟"),
         ft.dropdown.Option("30", "30分钟"), ft.dropdown.Option("60", "1小时"),
         ft.dropdown.Option("120", "2小时"),
     ], value="10")
-    btn_wifi_sleep = ft.ElevatedButton("保存休眠设置", on_click=wifi_sleep_click, width=INNER_WIDTH)
+    btn_wifi_sleep = ft.ElevatedButton("保存休眠设置", on_click=wifi_sleep_click)
 
     lte_grid = create_checkbox_grid(LTE_BANDS, "B", lte_selected, lte_checkboxes, lte_checkbox_change)
     sa_grid = create_checkbox_grid(NR_SA_BANDS, "N", nr_sa_selected, sa_checkboxes, sa_checkbox_change)
     nsa_grid = create_checkbox_grid(NR_NSA_BANDS, "N", nr_nsa_selected, nsa_checkboxes, nsa_checkbox_change)
 
-    btn_lte_apply = ft.ElevatedButton("应用 4G 锁频段", on_click=lte_band_apply, width=INNER_WIDTH)
-    btn_sa_apply = ft.ElevatedButton("应用 5G SA 锁频段", on_click=nr_sa_apply, width=INNER_WIDTH)
-    btn_nsa_apply = ft.ElevatedButton("应用 5G NSA 锁频段", on_click=nr_nsa_apply, width=INNER_WIDTH)
+    btn_lte_apply = ft.ElevatedButton("应用 4G 锁频段", on_click=lte_band_apply)
+    btn_sa_apply = ft.ElevatedButton("应用 5G SA 锁频段", on_click=nr_sa_apply)
+    btn_nsa_apply = ft.ElevatedButton("应用 5G NSA 锁频段", on_click=nr_nsa_apply)
 
-    cell_pci = ft.TextField(width=INPUT_W)
+    cell_pci = ft.TextField(expand=True)
     row_pci = ft.Row([
         ft.Row([ft.Text("PCI"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W),
         cell_pci
     ], spacing=10)
 
-    cell_earfcn = ft.TextField(width=INPUT_W)
+    cell_earfcn = ft.TextField(expand=True)
     row_earfcn = ft.Row([
         ft.Row([ft.Text("EARFCN"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W),
         cell_earfcn
     ], spacing=10)
 
-    cell_band = ft.Dropdown(width=INPUT_W, options=[
+    cell_band = ft.Dropdown(expand=True, options=[
         ft.dropdown.Option("1", "频段 1"), ft.dropdown.Option("3", "频段 3"),
         ft.dropdown.Option("28", "频段 28"), ft.dropdown.Option("41", "频段 41"),
         ft.dropdown.Option("78", "频段 78"),
     ], value="1")
     row_band = ft.Row([ft.Text("BAND", width=LABEL_W), cell_band], spacing=10)
 
-    cell_scs = ft.Dropdown(width=INPUT_W, options=[
+    cell_scs = ft.Dropdown(expand=True, options=[
         ft.dropdown.Option("15", "15KHz"), ft.dropdown.Option("30", "30KHz"), ft.dropdown.Option("60", "60KHz"),
     ], value="15")
     row_scs = ft.Row([ft.Text("SCS", width=LABEL_W), cell_scs], spacing=10)
 
-    cell_tip = ft.Text("设备重启后生效", size=13, color=ft.Colors.GREY_700, width=INNER_WIDTH, text_align="center")
+    cell_tip = ft.Text("设备重启后生效", size=13, color=ft.Colors.GREY_700, text_align=ft.TextAlign.CENTER)
     
-    btn_cell_apply = ft.ElevatedButton("应用锁小区", on_click=cell_lock_apply, width=INNER_WIDTH, height=45)
-    btn_cell_unlock = ft.ElevatedButton("清除锁定", on_click=cell_unlock_click, width=180, height=45, color=ft.Colors.ORANGE)
-    btn_cell_reboot = ft.ElevatedButton("重启设备", on_click=reboot_click, width=180, height=45, color=ft.Colors.RED)
+    btn_cell_apply = ft.ElevatedButton("应用锁小区", on_click=cell_lock_apply, height=45)
+    
+    btn_cell_unlock = ft.ElevatedButton("清除锁定", on_click=cell_unlock_click, height=45, color=ft.Colors.RED, expand=True)
+    btn_cell_reboot = ft.ElevatedButton("重启设备", on_click=reboot_click, height=45, color=ft.Colors.RED, expand=True)
 
-    btn_refresh = ft.ElevatedButton("刷新设备数据", icon=ft.Icons.REFRESH, on_click=refresh_data, width=195)
-    btn_reboot_top = ft.ElevatedButton("重启设备", icon=ft.Icons.POWER_SETTINGS_NEW, color=ft.Colors.RED, on_click=reboot_click)
+    btn_refresh = ft.ElevatedButton("刷新设备数据", icon=ft.Icons.REFRESH, on_click=refresh_data, expand=True)
+    btn_reboot_top = ft.ElevatedButton("重启设备", icon=ft.Icons.POWER_SETTINGS_NEW, color=ft.Colors.RED, on_click=reboot_click, expand=True)
 
     setting_card = ft.Container(
         content=ft.Column([
@@ -688,16 +691,16 @@ def main(page: ft.Page):
             cell_tip,
             btn_cell_apply,
             ft.Row([btn_cell_unlock, btn_cell_reboot], spacing=10),
-        ], spacing=12),
-        padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10, width=UI_WIDTH
+        ], spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+        padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10
     )
 
     main_view = ft.Column(
         [
-            ft.Container(height=20),
-            ft.Text("📊 设备状态", size=24, weight=ft.FontWeight.BOLD),
+            ft.Container(height=10),
+            ft.Text("📊 设备状态", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
             status_card,
-            ft.Row([btn_refresh, btn_reboot_top], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+            ft.Row([btn_refresh, btn_reboot_top], spacing=10),
             ft.Container(height=10),
             
             reboot_card,
@@ -706,10 +709,17 @@ def main(page: ft.Page):
             setting_card,
             ft.Container(height=30)
         ],
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         visible=False
     )
 
     page.add(login_view, main_view)
+
+    # ----------------------------------------------
+    # 自动登录触发逻辑
+    # ----------------------------------------------
+    # 必须在 page.add() 渲染完 UI 之后调用，否则 Flet 会报错找不到控件
+    if saved_pwd and saved_ip:
+        login_click(None)
 
 ft.app(target=main)

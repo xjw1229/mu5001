@@ -252,24 +252,37 @@ async def main(page: ft.Page):
     def fetch_realtime_stats():
         if not app_state["session"]: return
         try:
-            cmd = "battery_value,battery_charging,network_type,wan_ipaddr,Z5g_rsrp,Z5g_SINR,nr5g_pci,nr5g_action_channel,pm_sensor_mdm,battery_temp,pm_sensor_pa1,realtime_tx_thrpt,realtime_rx_thrpt,realtime_tx_bytes,realtime_rx_bytes,monthly_tx_bytes,monthly_rx_bytes"
+            # 加入了 4G 的 band/频点/信号数据抓取，支持和 5G 混编展示
+            cmd = "battery_value,battery_charging,network_type,wan_ipaddr,Z5g_rsrp,Z5g_SINR,nr5g_pci,nr5g_action_channel,pm_sensor_mdm,battery_temp,pm_sensor_pa1,realtime_tx_thrpt,realtime_rx_thrpt,realtime_tx_bytes,realtime_rx_bytes,monthly_tx_bytes,monthly_rx_bytes,wan_active_band,nr5g_action_band,wan_active_channel,lte_pci,lte_rsrp,lte_snr"
             url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={cmd}&multi_data=1"
             res = app_state["session"].get(url, timeout=2).json()
 
-            txt_network.value = f"网络: {res.get('network_type', '?')}"
+            # --- 网络类型与频段拼接逻辑 ---
+            net_type = res.get('network_type', '?')
+            lte_band = str(res.get('wan_active_band', '')).strip()
+            nr_band = str(res.get('nr5g_action_band', '')).strip()
+
+            band_display = ""
+            if '5G' in net_type.upper() or 'SA' in net_type.upper() or 'NSA' in net_type.upper():
+                # 对于 5G 优先显示 nr_band，NSA可能回退显示
+                band_display = nr_band if nr_band else lte_band
+            else:
+                band_display = lte_band
+                
+            if band_display:
+                txt_network.value = f"网络: {net_type} ({band_display})"
+            else:
+                txt_network.value = f"网络: {net_type}"
             
-            # 电池逻辑
+            # --- 电池逻辑 ---
             battery_val = str(res.get('battery_value', '?'))
             charging_flag = str(res.get('battery_charging', ''))
-            if charging_flag in ['1', '2']:
-                charge_str = "充电中"
-            else:
-                charge_str = "未充电"
+            charge_str = "充电中" if charging_flag in ['1', '2'] else "未充电"
             txt_battery.value = f"电量: {battery_val}% ({charge_str})"
             
             txt_wan_ip.value = f"WAN IP: {res.get('wan_ipaddr', '未分配')}"
 
-            # 网速与流量更新
+            # --- 网速与流量更新 ---
             tx_speed = res.get("realtime_tx_thrpt", 0)
             rx_speed = res.get("realtime_rx_thrpt", 0)
             txt_tx_speed.value = f"上传速度: {format_bytes(tx_speed)}/s"
@@ -282,16 +295,35 @@ async def main(page: ft.Page):
             txt_traffic_rt.value = f"本次流量: {format_bytes(rt_tx_bytes + rt_rx_bytes)}"
             txt_traffic_mo.value = f"当月流量: {format_bytes(mo_tx_bytes + mo_rx_bytes)}"
 
-            # 信号与温度更新
-            freq_5g = res.get("nr5g_action_channel", "").strip()
-            raw_pci_5g = res.get("nr5g_pci", "").strip()
+            # --- 信号自适应更新 (4G/5G通用) ---
+            freq_5g = str(res.get("nr5g_action_channel", "")).strip()
+            freq_4g = str(res.get("wan_active_channel", "")).strip()
+            freq_val = freq_5g if freq_5g else freq_4g
+            
+            raw_pci_5g = str(res.get("nr5g_pci", "")).strip()
+            raw_pci_4g = str(res.get("lte_pci", "")).strip()
+            
             try: pci_5g = str(int(raw_pci_5g, 16)) if raw_pci_5g else ""
             except: pci_5g = raw_pci_5g
-            txt_5g_freq.value = f"5G 频点: {freq_5g if freq_5g else '--'}"
-            txt_5g_pci.value = f"5G PCI: {pci_5g if pci_5g else '--'}"
-            txt_5g_rsrp.value = f"5G 信号强度: {res.get('Z5g_rsrp', '--')} dBm"
-            txt_5g_sinr.value = f"5G 信噪比: {res.get('Z5g_SINR', '--')} dB"
+            try: pci_4g = str(int(raw_pci_4g, 16)) if raw_pci_4g else ""
+            except: pci_4g = raw_pci_4g
+            
+            pci_val = pci_5g if pci_5g else pci_4g
+            
+            rsrp_5g = str(res.get('Z5g_rsrp', '')).strip()
+            rsrp_4g = str(res.get('lte_rsrp', '')).strip()
+            rsrp_val = rsrp_5g if rsrp_5g else rsrp_4g
+            
+            sinr_5g = str(res.get('Z5g_SINR', '')).strip()
+            sinr_4g = str(res.get('lte_snr', '')).strip()
+            sinr_val = sinr_5g if sinr_5g else sinr_4g
 
+            txt_freq.value = f"频点: {freq_val if freq_val else '--'}"
+            txt_pci.value = f"PCI: {pci_val if pci_val else '--'}"
+            txt_rsrp.value = f"信号强度: {rsrp_val if rsrp_val else '--'} dBm"
+            txt_sinr.value = f"信噪比: {sinr_val if sinr_val else '--'} dB"
+
+            # --- 温度更新 ---
             txt_temp_bat.value = f"电池温度: {res.get('battery_temp', '--')}℃"
             txt_temp_mdm.value = f"4G Modem: {res.get('pm_sensor_mdm', '--')}℃"
             txt_temp_pa.value  = f"PA: {res.get('pm_sensor_pa1', '--')}℃"
@@ -520,6 +552,55 @@ async def main(page: ft.Page):
         login_btn.disabled = False
         page.update()
 
+    # 防挤占一键重登功能
+    async def relogin_click(e):
+        if not app_state["ip"] or not app_state["password"]:
+            status_text.value = "⚠️ 本地无缓存密码，请退出重启APP"
+            status_text.color = ft.Colors.RED
+            page.update()
+            return
+            
+        status_text.value = "🔄 正在尝试重新登入并解锁开发者..."
+        status_text.color = ft.Colors.ORANGE
+        page.update()
+        
+        await asyncio.sleep(0.01) 
+        
+        ip = app_state["ip"]
+        pwd = app_state["password"]
+        
+        try:
+            s = requests.Session()
+            s.headers.update({"User-Agent": "Mozilla/5.0", "Referer": f"{ip}/index.html"})
+            s.get(f"{ip}/index.html", timeout=3)
+            ver = s.get(f"{ip}/goform/goform_get_cmd_process?isTest=false&cmd=Language,cr_version,wa_inner_version&multi_data=1").json()
+            rd0 = ver.get("wa_inner_version", "")
+            rd1 = ver.get("cr_version", "")
+            ld_login = s.get(f"{ip}/goform/goform_get_cmd_process?isTest=false&cmd=LD").json().get("LD", "")
+            rd_val = s.get(f"{ip}/goform/goform_get_cmd_process?isTest=false&cmd=RD").json()["RD"]
+            pwd_enc = get_sha256_upper(get_sha256_upper(pwd) + ld_login)
+            res = s.post(f"{ip}/goform/goform_set_cmd_process", data={
+                "isTest": "false", "goformId": "LOGIN", "password": pwd_enc, "AD": calculate_ad(rd0, rd1, rd_val)
+            }).json()
+            
+            if str(res.get("result", "")) in ["0", "4"]:
+                app_state.update({"session": s, "rd0": rd0, "rd1": rd1})
+                if unlock_developer():
+                    status_text.value = "✅ 重登成功并已解锁开发者权限"
+                    status_text.color = ft.Colors.GREEN
+                else:
+                    status_text.value = "⚠️ 重登成功，但开发者解锁失败"
+                    status_text.color = ft.Colors.ORANGE
+                refresh_data()
+            else:
+                status_text.value = "❌ 重新登录失败，可能密码已修改或被锁定"
+                status_text.color = ft.Colors.RED
+        except Exception:
+            status_text.value = "❌ 重登连接失败，请检查网络"
+            status_text.color = ft.Colors.RED
+            
+        page.update()
+
     # ==============================================
     # UI 控件构建
     # ==============================================
@@ -577,10 +658,11 @@ async def main(page: ft.Page):
     row_traffic = build_status_row("📊", col_traffic)
     # ----------------------------------------------
 
-    txt_5g_freq = ft.Text("5G 频点: --", size=13, color=ft.Colors.GREY_800)
-    txt_5g_pci  = ft.Text("5G PCI: --", size=13, color=ft.Colors.GREY_800)
-    txt_5g_rsrp = ft.Text("5G 信号强度: --", size=13, color=ft.Colors.GREY_800)
-    txt_5g_sinr = ft.Text("5G 信噪比: --", size=13, color=ft.Colors.GREY_800)
+    # 适配自适应通用信号
+    txt_freq = ft.Text("频点: --", size=13, color=ft.Colors.GREY_800)
+    txt_pci  = ft.Text("PCI: --", size=13, color=ft.Colors.GREY_800)
+    txt_rsrp = ft.Text("信号强度: --", size=13, color=ft.Colors.GREY_800)
+    txt_sinr = ft.Text("信噪比: --", size=13, color=ft.Colors.GREY_800)
 
     txt_temp_bat = ft.Text("电池温度: --℃", size=13, color=ft.Colors.GREY_800)
     txt_temp_mdm = ft.Text("4G Modem: --℃", size=13, color=ft.Colors.GREY_800)
@@ -591,10 +673,10 @@ async def main(page: ft.Page):
     row_wan_ip  = build_status_row("🌐", txt_wan_ip)
     row_users   = build_status_row("👥", txt_users)
 
-    row_5g_freq = build_status_row("📡", txt_5g_freq)
-    row_5g_pci  = build_status_row("📍", txt_5g_pci)
-    row_5g_rsrp = build_status_row("📶", txt_5g_rsrp)
-    row_5g_sinr = build_status_row("⚡", txt_5g_sinr)
+    row_freq = build_status_row("📡", txt_freq)
+    row_pci  = build_status_row("📍", txt_pci)
+    row_rsrp = build_status_row("📶", txt_rsrp)
+    row_sinr = build_status_row("⚡", txt_sinr)
     
     temp_col_content = ft.Column([txt_temp_bat, txt_temp_mdm, txt_temp_pa], spacing=4)
     row_temps = build_status_row("🌡️", temp_col_content)
@@ -607,7 +689,7 @@ async def main(page: ft.Page):
             ft.Divider(height=5),
             row_speed, row_traffic,
             ft.Divider(height=5),
-            row_5g_freq, row_5g_pci, row_5g_rsrp, row_5g_sinr, 
+            row_freq, row_pci, row_rsrp, row_sinr, 
             ft.Divider(height=5),
             row_temps,
             ft.Divider(height=8), status_text
@@ -737,7 +819,12 @@ async def main(page: ft.Page):
             wifi_sleep, btn_wifi_sleep,
             ft.Container(height=15),
 
-            ft.Text("📡 网络频段锁定", weight=ft.FontWeight.BOLD),
+            # ----------- 修改点在这里 -----------
+            ft.Row([
+                ft.Text("📡 网络频段锁定", weight=ft.FontWeight.BOLD),
+                ft.Text("(每项至少保留一个频段)", size=12, color=ft.Colors.GREY_600)
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            # ------------------------------------
             ft.Divider(height=5),
 
             ft.Text("🔹 4G LTE 频段", size=13, weight=ft.FontWeight.W_500),
@@ -765,10 +852,45 @@ async def main(page: ft.Page):
         padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10
     )
 
+    # ----------------------------------------------
+    # 包含重登按钮的 Header (物理占位对齐，彻底避开 margin 报错)
+    # ----------------------------------------------
+    relogin_btn = ft.Container(
+        content=ft.Column(
+            [
+                #LOGIN 图标
+                ft.Icon(ft.Icons.SWITCH_ACCOUNT, color=ft.Colors.BLUE_700, size=24),
+                ft.Text("重登", size=11, color=ft.Colors.BLUE_700, weight=ft.FontWeight.BOLD)
+            ],
+            spacing=2,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER
+        ),
+        width=40,
+        on_click=relogin_click,
+        tooltip="重新登录(防挤占)",
+        ink=True,
+        border_radius=8
+    )
+
+    title_row = ft.Row(
+        [
+            # 左侧：用 9px 的空白 Container 硬顶过去，加上 40px 的按钮，总共 49px，对齐下方图标
+            ft.Row([ft.Container(width=9), relogin_btn], spacing=0), 
+            
+            # 中间：标题开启 expand 自动伸缩居中
+            ft.Text("📊 设备状态", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, expand=True),
+            
+            # 右侧：对称放一个 49px 的空白块，保证中间标题绝对居中
+            ft.Container(width=49) 
+        ],
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER
+    )
+
     main_view = ft.Column(
         [
             ft.Container(height=10),
-            ft.Text("📊 设备状态", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+            title_row,
             status_card,
             ft.Row([btn_refresh, btn_reboot_top], spacing=10),
             ft.Container(height=10),

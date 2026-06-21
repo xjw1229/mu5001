@@ -5,7 +5,7 @@ from datetime import datetime
 import asyncio
 
 # ==========================================
-# 通用工具
+# 解密工具
 # ==========================================
 def get_md5(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest().lower()

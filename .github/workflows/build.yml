@@ -7,7 +7,7 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-        
+      
       - name: 配置 Python
         uses: actions/setup-python@v5
         with:
@@ -31,8 +31,7 @@ jobs:
           pip install -r requirements.txt
           
       - name: 构建安卓 APK
-        # 这里做了修改，将 org 和 project 分开指定
-        run: flet build apk --org com.zte --project mu5001
+        run: flet build apk --org com.zte
         
       - name: 上传 APK
         uses: actions/upload-artifact@v4

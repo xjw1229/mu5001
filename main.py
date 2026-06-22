@@ -711,7 +711,7 @@ async def main(page: ft.Page):
 
     rb_time_hr = ft.TextField(label="时", expand=1, value="02")
     rb_time_min = ft.TextField(label="分", expand=1, value="00")
-    rb_buffer = ft.TextField(label="缓冲时间", expand=2, value="02")
+    rb_buffer = ft.TextField(label="缓冲时间", expand=1, value="02")
     row_time = ft.Row([rb_time_hr, ft.Text(":", size=20, weight=ft.FontWeight.BOLD), rb_time_min, rb_buffer], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     week_days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]

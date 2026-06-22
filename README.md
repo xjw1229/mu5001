@@ -8,7 +8,7 @@
   <table>
     <tr>
       <td align="center">
-        <img src="https://github.com/user-attachments/assets/13299051-7b7f-4c0b-aa14-47fc8a49088e" width="150" alt="界面预览 1"/><br/>
+        <img src="https://github.com/user-attachments/assets/13299051-7b7f-4c0b-aa14-47fc8a49088e" width="180" alt="界面预览 1"/><br/>
         <sub>登录界面</sub>
       </td>
       <td align="center">

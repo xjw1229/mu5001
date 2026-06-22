@@ -8,19 +8,23 @@
   <table>
     <tr>
       <td align="center">
-        <img src="https://github.com/user-attachments/assets/ab538b7f-15ee-4c11-b0b8-8d37cc6c9b5a" width="180" alt="界面预览 1"/><br/>
-        <sub>状态监控面板</sub>
+        <img src="https://github.com/user-attachments/assets/13299051-7b7f-4c0b-aa14-47fc8a49088e" width="150" alt="界面预览 1"/><br/>
+        <sub>登录界面</sub>
       </td>
       <td align="center">
-        <img src="https://github.com/user-attachments/assets/adb658ee-e61b-4de2-8174-3bba602213fd" width="180" alt="界面预览 2"/><br/>
+        <img src="https://github.com/user-attachments/assets/ab538b7f-15ee-4c11-b0b8-8d37cc6c9b5a" width="180" alt="界面预览 2"/><br/>
+        <sub>状态监控面板
+      </td>
+      <td align="center">
+        <img src="https://github.com/user-attachments/assets/adb658ee-e61b-4de2-8174-3bba602213fd" width="180" alt="界面预览 3"/><br/>
         <sub>定时重启设置</sub>
       </td>
       <td align="center">
-        <img src="https://github.com/user-attachments/assets/b47ab5eb-4c48-4a72-afb3-846a71b67cde" width="180" alt="界面预览 3"/><br/>
+        <img src="https://github.com/user-attachments/assets/b47ab5eb-4c48-4a72-afb3-846a71b67cde" width="180" alt="界面预览 4"/><br/>
         <sub>网络锁频</sub>
       </td>
       <td align="center">
-        <img src="https://github.com/user-attachments/assets/7047e542-494e-4b54-8b5c-4b32d5b66114" width="180" alt="界面预览 4"/><br/>
+        <img src="https://github.com/user-attachments/assets/7047e542-494e-4b54-8b5c-4b32d5b66114" width="180" alt="界面预览 5"/><br/>
         <sub>基站锁定</sub>
       </td>
     </tr>

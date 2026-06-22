@@ -219,23 +219,6 @@ async def main(page: ft.Page):
                 if any(o.key == rb_dod for o in rb_interval.options): rb_interval.value = rb_dod
             except Exception as e: pass
 
-            # 抓取接入设备
-            s = app_state["session"]
-            ip_addr = app_state["ip"]
-            wifi_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=station_list").json()
-            lan_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=lan_station_list")
-            wifi_devs = wifi_ret.get("station_list", [])
-            try: lan_devs = lan_ret.json().get("lan_station_list", [])
-            except: lan_devs = []
-            mac_set = set()
-            for dev in wifi_devs:
-                mac = dev.get("mac_addr", "").strip().upper()
-                if mac: mac_set.add(mac)
-            for dev in lan_devs:
-                mac = dev.get("mac_addr", "").strip().upper()
-                if mac: mac_set.add(mac)
-            txt_users.value = f"接入设备: {len(mac_set)} 台"
-
             status_text.value = "✅ 数据读取成功" + (" | 开发者已解锁" if app_state["dev_unlocked"] else " | ⚠️ 开发者未解锁")
             status_text.color = ft.Colors.GREEN if app_state["dev_unlocked"] else ft.Colors.ORANGE
             
@@ -327,6 +310,30 @@ async def main(page: ft.Page):
             txt_temp_bat.value = f"电池温度: {res.get('battery_temp', '--')}℃"
             txt_temp_mdm.value = f"4G Modem: {res.get('pm_sensor_mdm', '--')}℃"
             txt_temp_pa.value  = f"PA: {res.get('pm_sensor_pa1', '--')}℃"
+
+            # ================= 自动刷新接入设备数量 =================
+            try:
+                s = app_state["session"]
+                ip_addr = app_state["ip"]
+                # 加上 timeout 防止局域网卡顿导致页面失去响应
+                wifi_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=station_list", timeout=2).json()
+                lan_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=lan_station_list", timeout=2)
+                
+                wifi_devs = wifi_ret.get("station_list", [])
+                try: lan_devs = lan_ret.json().get("lan_station_list", [])
+                except: lan_devs = []
+                
+                mac_set = set()
+                for dev in wifi_devs:
+                    mac = dev.get("mac_addr", "").strip().upper()
+                    if mac: mac_set.add(mac)
+                for dev in lan_devs:
+                    mac = dev.get("mac_addr", "").strip().upper()
+                    if mac: mac_set.add(mac)
+                txt_users.value = f"接入设备: {len(mac_set)} 台"
+            except Exception:
+                pass # 忽略错误，防止抓取设备列表超时导致整个面板不刷新
+            # ========================================================
 
             txt_local_time.value = f"设备当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
             page.update()
@@ -819,12 +826,10 @@ async def main(page: ft.Page):
             wifi_sleep, btn_wifi_sleep,
             ft.Container(height=15),
 
-            # ----------- 修改点在这里 -----------
             ft.Row([
                 ft.Text("📡 网络频段锁定", weight=ft.FontWeight.BOLD),
                 ft.Text("(每项至少保留一个频段)", size=12, color=ft.Colors.GREY_600)
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            # ------------------------------------
             ft.Divider(height=5),
 
             ft.Text("🔹 4G LTE 频段", size=13, weight=ft.FontWeight.W_500),

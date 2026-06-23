@@ -412,15 +412,29 @@ async def main(page: ft.Page):
                 selected_val = NET_MODES[name]
                 break
                 
-        status_text.value = "正在断开移动数据网络..."
+        status_text.value = "正在下发网络锁定配置..."
         status_text.color = ft.Colors.ORANGE
         page.update()
-        
-        # 1. 断开网络连接 (带 notCallback 参数)
+
+        # 1. 尝试断网
         execute_post("DISCONNECT_NETWORK", {"notCallback": "true"})
-        await asyncio.sleep(1) # 缓冲1秒等待设备处理断网
+        await asyncio.sleep(0.4) # 仅保留 0.4 秒
         
-        status_text.value = "网络已断开，正在下发锁定配置..."
+        # 2. 下发网络模式配置
+        ok_set = execute_post("SET_BEARER_PREFERENCE", {"BearerPreference": selected_val})
+        await asyncio.sleep(0.4) # 仅保留 0.4 秒
+        
+        # 3. 恢复重新联网
+        ok_connect = execute_post("CONNECT_NETWORK", {"notCallback": "true"})
+        
+        # 4. 结果判定
+        if ok_set and ok_connect:
+            status_text.value = f"✅ 网络模式切换成功"
+            status_text.color = ft.Colors.GREEN
+        else:
+            status_text.value = "❌ 设置失败 (配置未生效或操作期间被挤下线)"
+            status_text.color = ft.Colors.RED
+        
         page.update()
         
         # 2. 调用中兴网络模式设置接口

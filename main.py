@@ -55,10 +55,12 @@ def mask_to_lte_bands(mask_str):
 # ==========================================
 async def main(page: ft.Page):
     page.title = "MU5001"
-    page.horizontal_alignment = ft.CrossAxisAlignment.STRETCH
-    page.padding = 15
+    # 取消全局边距，为 Stack 悬浮定位让路
+    page.padding = 0
     page.theme_mode = ft.ThemeMode.LIGHT
-    page.scroll = ft.ScrollMode.AUTO
+
+    # 启用 Flet 0.80.0+ 官方最新的本地持久化存储服务
+    prefs = ft.SharedPreferences()
 
     app_state = {
         "session": None,
@@ -69,7 +71,6 @@ async def main(page: ft.Page):
         "dev_unlocked": False
     }
 
-    # 设备原生支持频段
     LTE_BANDS = ["1","3","4","5","7","8","12","17","34","39","40","41"]
     NR_SA_BANDS = ["1","3","28","41","78"]
     NR_NSA_BANDS = ["28","41","78"]
@@ -82,11 +83,8 @@ async def main(page: ft.Page):
     sa_checkboxes = {}
     nsa_checkboxes = {}
 
-    # ==============================================
-    # 网络模式配置字典 (分离机制)
-    # ==============================================
-    API_KEY_WRITE = "BearerPreference"  # 写入时的键名
-    API_KEY_READ  = "net_select"        # 读取时的键名
+    API_KEY_WRITE = "BearerPreference"
+    API_KEY_READ  = "net_select"
 
     NET_CONFIG = {
         "5G/4G/3G": {"write_val": "WL_AND_5G",     "read_val": "WL_AND_5G"},
@@ -98,11 +96,8 @@ async def main(page: ft.Page):
     }
     
     net_mode_checkboxes = {}
-    LABEL_W = 75 # 表单左侧标签适应宽度
+    LABEL_W = 75 
 
-    # ==============================================
-    # 严格对齐网格生成器
-    # ==============================================
     def create_checkbox_grid(bands_list, prefix, selected_set, checkboxes_dict, on_change_handler):
         controls = []
         for b in bands_list:
@@ -114,12 +109,8 @@ async def main(page: ft.Page):
             )
             checkboxes_dict[b] = cb
             controls.append(ft.Container(content=cb, width=72, padding=0, margin=0))
-
         return ft.Row(controls, wrap=True, spacing=5, run_spacing=0)
 
-    # ==============================================
-    # 频段与网络选择事件处理
-    # ==============================================
     def lte_checkbox_change(e):
         band_id = e.control.data
         if e.control.value: lte_selected.add(band_id)
@@ -144,20 +135,15 @@ async def main(page: ft.Page):
             e.control.value = True
         page.update()
 
-    # ==============================================
-    # 核心交互工具
-    # ==============================================
     def show_toast(msg, is_success=True):
         bg_color = ft.Colors.GREEN_700 if is_success else ft.Colors.RED_700
         icon = "✅ " if is_success else "❌ "
-        
         snack = ft.SnackBar(
             content=ft.Text(f"{icon}{msg}", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
             bgcolor=bg_color,
             duration=5000,
             behavior=ft.SnackBarBehavior.FLOATING
         )
-        # Flet 0.85+ 官方指定弹窗方式
         page.overlay.append(snack)
         snack.open = True
         page.update()
@@ -187,9 +173,6 @@ async def main(page: ft.Page):
             return True
         return False
 
-    # ==============================================
-    # 全量数据刷新
-    # ==============================================
     def refresh_data(e=None):
         if not app_state["session"]: return
         status_text.value = "正在读取设备信息..."
@@ -258,23 +241,19 @@ async def main(page: ft.Page):
                 if any(o.key == rb_dod for o in rb_interval.options): rb_interval.value = rb_dod
             except Exception as e_inner: pass
 
-            # 🎯 精准请求网络锁定状态 (net_select键名)
             try:
                 net_url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={API_KEY_READ}"
                 net_res = app_state["session"].get(net_url, timeout=3).json()
-                # 获取 net_select 的值，统一转大写避免大小写混用
                 current_bearer = str(net_res.get(API_KEY_READ, "")).strip().upper()
 
                 if current_bearer:
                     matched = False
                     for name, config in NET_CONFIG.items():
                         if current_bearer == config["read_val"].upper():
-                            # 先清空所有的勾，再打上对应的勾
                             for cb in net_mode_checkboxes.values(): cb.value = False
                             net_mode_checkboxes[name].value = True
                             matched = True
                             break
-                    # 容错兜底：如果获取到了值但完全不认识，默认高亮第一项防报错
                     if not matched:
                         for cb in net_mode_checkboxes.values(): cb.value = False
                         net_mode_checkboxes["5G/4G/3G"].value = True
@@ -285,7 +264,6 @@ async def main(page: ft.Page):
             status_text.color = ft.Colors.GREEN if app_state["dev_unlocked"] else ft.Colors.ORANGE
             
             fetch_realtime_stats()
-            # 如果是用户手动点击刷新，给个小提示
             if e: show_toast("数据刷新成功，请确保已登录", True)
         except Exception:
             status_text.value = "⚠️ 读取失败，请检查连接"
@@ -293,9 +271,6 @@ async def main(page: ft.Page):
             if e: show_toast("数据读取失败，请检查连接", False)
             page.update()
 
-    # ==============================================
-    # 纯展示数据 1秒自动刷新拉取专用
-    # ==============================================
     def fetch_realtime_stats():
         if not app_state["session"]: return
         try:
@@ -400,9 +375,6 @@ async def main(page: ft.Page):
             if app_state["session"] and main_view.visible:
                 fetch_realtime_stats()
 
-    # ==============================================
-    # 动作按钮执行
-    # ==============================================
     def reboot_click(e):
         show_toast("正在发送重启指令...", True)
         if execute_post("REBOOT_DEVICE", {}):
@@ -564,6 +536,12 @@ async def main(page: ft.Page):
     # ==============================================
     # 登录逻辑
     # ==============================================
+    prefs = None
+    if hasattr(page, "client_storage"):
+        prefs = page.client_storage
+    elif hasattr(page, "shared_preferences"):
+        prefs = page.shared_preferences
+
     async def login_click(e=None):
         ip = ip_input.value
         pwd = pwd_input.value
@@ -595,12 +573,23 @@ async def main(page: ft.Page):
             }).json()
             
             if str(res.get("result", "")) in ["0", "4"]:
-                if remember_cb.value:
-                    await page.shared_preferences.set("saved_ip", ip)
-                    await page.shared_preferences.set("saved_pwd", pwd)
-                else:
-                    await page.shared_preferences.remove("saved_ip")
-                    await page.shared_preferences.remove("saved_pwd")
+                if prefs:
+                    try:
+                        if remember_cb.value:
+                            if hasattr(prefs, "set_async"):
+                                await prefs.set_async("saved_ip", ip)
+                                await prefs.set_async("saved_pwd", pwd)
+                            else:
+                                await prefs.set("saved_ip", ip)
+                                await prefs.set("saved_pwd", pwd)
+                        else:
+                            if hasattr(prefs, "remove_async"):
+                                await prefs.remove_async("saved_ip")
+                                await prefs.remove_async("saved_pwd")
+                            else:
+                                await prefs.remove("saved_ip")
+                                await prefs.remove("saved_pwd")
+                    except Exception: pass
                     
                 app_state.update({"session": s, "ip": ip, "rd0": rd0, "rd1": rd1, "password": pwd})
                 login_status.value = "解锁开发者权限..."
@@ -608,19 +597,37 @@ async def main(page: ft.Page):
                 unlock_developer()
                 login_view.visible = False
                 main_view.visible = True
+                
+                # 登录后显示重登按钮
+                fab_container.visible = True
+                
                 refresh_data()
                 show_toast("登录成功", True)
             else:
-                await page.shared_preferences.remove("saved_ip")
-                await page.shared_preferences.remove("saved_pwd")
+                if prefs:
+                    try:
+                        if hasattr(prefs, "remove_async"):
+                            await prefs.remove_async("saved_ip")
+                            await prefs.remove_async("saved_pwd")
+                        else:
+                            await prefs.remove("saved_ip")
+                            await prefs.remove("saved_pwd")
+                    except Exception: pass
                 remember_cb.value = False
                 pwd_input.value = "" 
                 login_status.value = "❌ 密码错误或账号锁定"
                 login_status.color = ft.Colors.RED
                 show_toast("密码错误或账号锁定", False)
         except Exception:
-            await page.shared_preferences.remove("saved_ip")
-            await page.shared_preferences.remove("saved_pwd")
+            if prefs:
+                try:
+                    if hasattr(prefs, "remove_async"):
+                        await prefs.remove_async("saved_ip")
+                        await prefs.remove_async("saved_pwd")
+                    else:
+                        await prefs.remove("saved_ip")
+                        await prefs.remove("saved_pwd")
+                except Exception: pass
             remember_cb.value = False
             login_status.value = "❌ 连接失败，请检查地址和网络"
             login_status.color = ft.Colors.RED
@@ -629,7 +636,7 @@ async def main(page: ft.Page):
         login_btn.disabled = False
         page.update()
 
-    async def relogin_click(e):
+    async def relogin_click(e=None):
         if not app_state["ip"] or not app_state["password"]:
             show_toast("本地无缓存密码，请重启APP", False)
             return
@@ -681,29 +688,42 @@ async def main(page: ft.Page):
     # ==============================================
     title = ft.Text("MU5001", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700, text_align=ft.TextAlign.CENTER)
     
-    saved_ip = await page.shared_preferences.get("saved_ip")
-    saved_pwd = await page.shared_preferences.get("saved_pwd")
+    saved_ip = ""
+    saved_pwd = ""
+    try:
+        if hasattr(prefs, "get_async"):
+            saved_ip = await prefs.get_async("saved_ip")
+            saved_pwd = await prefs.get_async("saved_pwd")
+        else:
+            saved_ip = await prefs.get("saved_ip")
+            saved_pwd = await prefs.get("saved_pwd")
+    except Exception: pass
     
     ip_input = ft.TextField(label="管理地址", value=saved_ip if saved_ip else "http://192.168.0.1")
     pwd_input = ft.TextField(label="管理员密码", password=True, can_reveal_password=True, value=saved_pwd if saved_pwd else "")
     remember_cb = ft.Checkbox(label="记住密码并自动登录", value=bool(saved_pwd)) 
     
     login_status = ft.Text("输入账号密码登录", color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
-    login_btn = ft.ElevatedButton("一键登录", on_click=login_click, height=45)
+    login_btn = ft.Button("一键登录", on_click=login_click, height=45)
     
-    login_view = ft.Column(
-        [
-            ft.Container(height=40), 
-            title, 
-            ft.Container(height=20), 
-            ip_input, 
-            pwd_input, 
-            remember_cb,
-            ft.Container(height=8), 
-            login_status, 
-            login_btn
-        ],
-        horizontal_alignment=ft.CrossAxisAlignment.STRETCH
+    login_view = ft.Container(
+        padding=15,
+        expand=True,
+        content=ft.Column(
+            [
+                ft.Container(height=40), 
+                title, 
+                ft.Container(height=20), 
+                ip_input, 
+                pwd_input, 
+                remember_cb,
+                ft.Container(height=8), 
+                login_status, 
+                login_btn
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            scroll=ft.ScrollMode.AUTO,
+        )
     )
 
     def build_status_row(icon, text_control):
@@ -792,7 +812,7 @@ async def main(page: ft.Page):
     )
 
     rb_interval = ft.Dropdown(label="间隔天数", options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], value="1")
-    btn_save_reboot = ft.ElevatedButton("保存重启规则", on_click=save_schedule_reboot)
+    btn_save_reboot = ft.Button("保存重启规则", on_click=save_schedule_reboot)
 
     reboot_card = ft.Container(
         content=ft.Column([
@@ -820,7 +840,7 @@ async def main(page: ft.Page):
         ft.dropdown.Option("30", "30分钟"), ft.dropdown.Option("60", "1小时"),
         ft.dropdown.Option("120", "2小时"),
     ], value="10")
-    btn_wifi_sleep = ft.ElevatedButton("保存休眠设置", on_click=wifi_sleep_click)
+    btn_wifi_sleep = ft.Button("保存休眠设置", on_click=wifi_sleep_click)
 
     net_mode_controls = []
     for name in NET_CONFIG.keys():
@@ -829,15 +849,15 @@ async def main(page: ft.Page):
         net_mode_controls.append(ft.Container(content=cb, col={"xs": 6, "sm": 4, "md": 3}, padding=0, margin=0))
 
     net_mode_grid = ft.ResponsiveRow(net_mode_controls, run_spacing=0, spacing=0)
-    btn_net_mode_apply = ft.ElevatedButton("应用网络锁定", on_click=apply_net_mode)
+    btn_net_mode_apply = ft.Button("应用网络锁定", on_click=apply_net_mode)
 
     lte_grid = create_checkbox_grid(LTE_BANDS, "B", lte_selected, lte_checkboxes, lte_checkbox_change)
     sa_grid = create_checkbox_grid(NR_SA_BANDS, "N", nr_sa_selected, sa_checkboxes, sa_checkbox_change)
     nsa_grid = create_checkbox_grid(NR_NSA_BANDS, "N", nr_nsa_selected, nsa_checkboxes, nsa_checkbox_change)
 
-    btn_lte_apply = ft.ElevatedButton("应用 4G 锁频段", on_click=lte_band_apply)
-    btn_sa_apply = ft.ElevatedButton("应用 5G SA 锁频段", on_click=nr_sa_apply)
-    btn_nsa_apply = ft.ElevatedButton("应用 5G NSA 锁频段", on_click=nr_nsa_apply)
+    btn_lte_apply = ft.Button("应用 4G 锁频段", on_click=lte_band_apply)
+    btn_sa_apply = ft.Button("应用 5G SA 锁频段", on_click=nr_sa_apply)
+    btn_nsa_apply = ft.Button("应用 5G NSA 锁频段", on_click=nr_nsa_apply)
 
     cell_pci = ft.TextField(expand=True)
     row_pci = ft.Row([ft.Row([ft.Text("PCI"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W), cell_pci], spacing=10)
@@ -859,12 +879,12 @@ async def main(page: ft.Page):
 
     cell_tip = ft.Text("设备重启后生效", size=13, color=ft.Colors.GREY_700, text_align=ft.TextAlign.CENTER)
     
-    btn_cell_apply = ft.ElevatedButton("应用锁小区", on_click=cell_lock_apply, height=45)
-    btn_cell_unlock = ft.ElevatedButton("清除锁定", on_click=cell_unlock_click, height=45, color=ft.Colors.RED, expand=True)
-    btn_cell_reboot = ft.ElevatedButton("重启设备", on_click=reboot_click, height=45, color=ft.Colors.RED, expand=True)
+    btn_cell_apply = ft.Button("应用锁小区", on_click=cell_lock_apply, height=45)
+    btn_cell_unlock = ft.Button("清除锁定", on_click=cell_unlock_click, height=45, color=ft.Colors.RED, expand=True)
+    btn_cell_reboot = ft.Button("重启设备", on_click=reboot_click, height=45, color=ft.Colors.RED, expand=True)
 
-    btn_refresh = ft.ElevatedButton("刷新数据", icon=ft.Icons.REFRESH, on_click=refresh_data, expand=True)
-    btn_reboot_top = ft.ElevatedButton("重启设备", icon=ft.Icons.POWER_SETTINGS_NEW, color=ft.Colors.RED, on_click=reboot_click, expand=True)
+    btn_refresh = ft.Button("刷新数据", icon=ft.Icons.REFRESH, on_click=refresh_data, expand=True)
+    btn_reboot_top = ft.Button("重启设备", icon=ft.Icons.POWER_SETTINGS_NEW, color=ft.Colors.RED, on_click=reboot_click, expand=True)
 
     setting_card = ft.Container(
         content=ft.Column([
@@ -910,49 +930,114 @@ async def main(page: ft.Page):
         padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10
     )
 
-    relogin_btn = ft.Container(
-        content=ft.Column(
-            [
-                ft.Icon(ft.Icons.SWITCH_ACCOUNT, color=ft.Colors.BLUE_700, size=24),
-                ft.Text("重登", size=11, color=ft.Colors.BLUE_700, weight=ft.FontWeight.BOLD)
-            ],
-            spacing=2,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER
-        ),
-        width=40,
-        on_click=relogin_click,
-        tooltip="重新登录(防挤占)",
-        ink=True,
-        border_radius=8
-    )
-
     title_row = ft.Row(
         [
-            ft.Row([ft.Container(width=9), relogin_btn], spacing=0), 
             ft.Text("📊 设备状态", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, expand=True),
-            ft.Container(width=49) 
         ],
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        alignment=ft.MainAxisAlignment.CENTER,
         vertical_alignment=ft.CrossAxisAlignment.CENTER
     )
 
-    main_view = ft.Column(
-        [
-            ft.Container(height=10),
-            title_row,
-            status_card,
-            ft.Row([btn_refresh, btn_reboot_top], spacing=10),
-            ft.Container(height=10),
-            reboot_card,
-            ft.Container(height=10),
-            setting_card,
-            ft.Container(height=30)
-        ],
-        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-        visible=False
+    main_view = ft.Container(
+        padding=15,
+        expand=True,
+        visible=False,
+        content=ft.Column(
+            [
+                ft.Container(height=10),
+                title_row,
+                status_card,
+                ft.Row([btn_refresh, btn_reboot_top], spacing=10),
+                ft.Container(height=10),
+                reboot_card,
+                ft.Container(height=10),
+                setting_card,
+                ft.Container(height=30)
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            scroll=ft.ScrollMode.AUTO,
+        )
     )
 
-    page.add(login_view, main_view)
+    # ==============================================
+    # 修复：完美可拖拽的悬浮按钮 + 窗口自适应对称边界
+    # ==============================================
+    # 改为从左算起的 left 坐标，配合限制器杜绝越界
+    init_w = page.width if page.width > 0 else 400
+    drag_state = {"top": 400, "left": max(0, init_w - 75)}
+
+    def ensure_fab_bounds():
+        safe_h = page.height if page.height > 0 else 800
+        safe_w = page.width if page.width > 0 else 400
+
+        #  Flet 标准悬浮按钮的物理尺寸是 56 像素
+        BTN_SIZE = 56
+        # 设置一个对称的安全边距 (如果设为 0 就是完全贴边，设为 8 就是两边各留 8 像素)
+        MARGIN = 8
+
+        # 确保上下左右极限对称
+        min_val_top = MARGIN
+        max_val_top = max(MARGIN, safe_h - BTN_SIZE - MARGIN)
+
+        min_val_left = MARGIN
+        max_val_left = max(MARGIN, safe_w - BTN_SIZE - MARGIN)
+        
+        drag_state["top"] = max(min_val_top, min(drag_state["top"], max_val_top))
+        drag_state["left"] = max(min_val_left, min(drag_state["left"], max_val_left))
+        
+        fab_container.top = drag_state["top"]
+        fab_container.left = drag_state["left"]
+        fab_container.update()
+
+    def handle_pan_update(e: ft.DragUpdateEvent):
+        try:
+            dy = e.local_delta.y
+            dx = e.local_delta.x
+        except AttributeError:
+            dy = getattr(e, "delta_y", 0)
+            dx = getattr(e, "delta_x", 0)
+            
+        drag_state["top"] += dy
+        drag_state["left"] += dx  # 正向加法，向右挪就是坐标增加
+        
+        ensure_fab_bounds()
+
+    # 只要窗口发生变化，立刻触发边界检测
+    def on_window_resize(e):
+        if fab_container.visible:
+            ensure_fab_bounds()
+
+    page.on_resize = on_window_resize
+
+    relogin_fab = ft.FloatingActionButton(
+        icon=ft.Icons.SWITCH_ACCOUNT,
+        bgcolor=ft.Colors.BLUE_700,
+        on_click=relogin_click
+    )
+
+    fab_gesture = ft.GestureDetector(
+        mouse_cursor=ft.MouseCursor.MOVE,
+        on_pan_update=handle_pan_update,
+        content=relogin_fab
+    )
+
+    fab_container = ft.Container(
+        content=fab_gesture,
+        left=drag_state["left"],
+        top=drag_state["top"],
+        visible=False 
+    )
+
+    root_stack = ft.Stack(
+        controls=[
+            login_view,
+            main_view,
+            fab_container
+        ],
+        expand=True
+    )
+
+    page.add(root_stack)
     asyncio.create_task(auto_refresh_task())
 
     if saved_pwd and saved_ip:

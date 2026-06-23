@@ -82,7 +82,7 @@ async def main(page: ft.Page):
     sa_checkboxes = {}
     nsa_checkboxes = {}
 
-    # 中兴网络模式的后端对应值 (已根据实际抓包完美修正)
+    # 中兴网络模式的后端对应值
     NET_MODES = {
         "5G/4G/3G": "WL_AND_5G",
         "NSA": "LTE_AND_5G", 
@@ -177,7 +177,8 @@ async def main(page: ft.Page):
         status_text.value = "正在读取设备信息..."
         page.update()
         try:
-            cmd = "sysIdleTimeToSleep,lte_band_lock,nr5g_sa_band_lock,nr5g_nsa_band_lock,nr5g_cell_lock,reboot_schedule_enable,reboot_schedule_mode,reboot_hour1,reboot_min1,reboot_timeframe_hours1,reboot_dow,reboot_dod"
+            # 加入 BearerPreference 进行批量获取
+            cmd = "sysIdleTimeToSleep,lte_band_lock,nr5g_sa_band_lock,nr5g_nsa_band_lock,nr5g_cell_lock,reboot_schedule_enable,reboot_schedule_mode,reboot_hour1,reboot_min1,reboot_timeframe_hours1,reboot_dow,reboot_dod,BearerPreference"
             url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={cmd}&multi_data=1"
             res = app_state["session"].get(url, timeout=5).json()
 
@@ -241,10 +242,9 @@ async def main(page: ft.Page):
                 if any(o.key == rb_dod for o in rb_interval.options): rb_interval.value = rb_dod
             except Exception as e: pass
 
-            # 读取当前网络锁定状态并回显到打勾状态
+            # 读取当前网络锁定状态并回显到打勾状态 (直接从 res 读取)
             try:
-                bearer_res = app_state["session"].get(f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd=BearerPreference").json()
-                current_bearer = bearer_res.get("BearerPreference", "")
+                current_bearer = res.get("BearerPreference", "")
                 if current_bearer:
                     for name, cb in net_mode_checkboxes.items():
                         cb.value = (NET_MODES[name] == current_bearer)
@@ -423,18 +423,18 @@ async def main(page: ft.Page):
         status_text.value = "网络已断开，正在下发锁定配置..."
         page.update()
         
-        # 2. 调用中兴网络模式设置接口 (使用完美匹配的字典值)
+        # 2. 调用中兴网络模式设置接口
         ok = execute_post("SET_BEARER_PREFERENCE", {"BearerPreference": selected_val})
         await asyncio.sleep(1) # 缓冲1秒等待设备保存配置
         
         status_text.value = "配置已下发，正在恢复网络连接..."
         page.update()
         
-        # 3. 恢复数据网络连接 (带上抓包发现的 notCallback 参数)
+        # 3. 恢复数据网络连接
         execute_post("CONNECT_NETWORK", {"notCallback": "true"})
         
         if ok:
-            status_text.value = f"✅ 网络模式已更改为 {name}，并已重新连网"
+            status_text.value = f"✅ 网络模式已更改，并已重新连网"
             status_text.color = ft.Colors.GREEN
         else:
             status_text.value = "❌ 设置失败，请确认开发者权限是否解锁"
@@ -851,7 +851,7 @@ async def main(page: ft.Page):
     for name in NET_MODES.keys():
         cb = ft.Checkbox(
             label=name, 
-            value=(name == "WL_AND_5G"), # 默认高亮勾选第一项 (注意这里也更新了默认值判断)
+            value=(name == "5G/4G/3G"), # 登录初始化显示：默认高亮勾选第一项
             on_change=net_mode_change
         )
         net_mode_checkboxes[name] = cb

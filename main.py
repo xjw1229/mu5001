@@ -404,7 +404,7 @@ async def main(page: ft.Page):
             status_text.color = ft.Colors.RED
         page.update()
 
-    # ⚠️ 网络模式锁定：先断网，修改完成后再恢复联网
+    # ⚠️ 网络模式锁定：先断网，修改完成后再恢复联网 (此操作无需开发者模式)
     async def apply_net_mode(e):
         selected_val = "WL_AND_5G"
         for name, cb in net_mode_checkboxes.items():
@@ -419,7 +419,7 @@ async def main(page: ft.Page):
         # 1. 尝试断网
         execute_post("DISCONNECT_NETWORK", {"notCallback": "true"})
         await asyncio.sleep(0.4) # 仅保留 0.4 秒
-        
+      
         # 2. 下发网络模式配置
         ok_set = execute_post("SET_BEARER_PREFERENCE", {"BearerPreference": selected_val})
         await asyncio.sleep(0.4) # 仅保留 0.4 秒
@@ -429,30 +429,12 @@ async def main(page: ft.Page):
         
         # 4. 结果判定
         if ok_set and ok_connect:
-            status_text.value = f"✅ 网络模式切换成功"
+            status_text.value = "✅ 网络模式切换成功"
             status_text.color = ft.Colors.GREEN
         else:
             status_text.value = "❌ 设置失败 (配置未生效或操作期间被挤下线)"
             status_text.color = ft.Colors.RED
         
-        page.update()
-        
-        # 2. 调用中兴网络模式设置接口
-        ok = execute_post("SET_BEARER_PREFERENCE", {"BearerPreference": selected_val})
-        await asyncio.sleep(1) # 缓冲1秒等待设备保存配置
-        
-        status_text.value = "配置已下发，正在恢复网络连接..."
-        page.update()
-        
-        # 3. 恢复数据网络连接
-        execute_post("CONNECT_NETWORK", {"notCallback": "true"})
-        
-        if ok:
-            status_text.value = f"✅ 网络模式已更改，并已重新连网"
-            status_text.color = ft.Colors.GREEN
-        else:
-            status_text.value = "❌ 设置失败，请确认开发者权限是否解锁"
-            status_text.color = ft.Colors.RED
         page.update()
 
     def lte_band_apply(e):

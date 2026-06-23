@@ -82,6 +82,17 @@ async def main(page: ft.Page):
     sa_checkboxes = {}
     nsa_checkboxes = {}
 
+    # 中兴网络模式的后端对应值 (已根据实际抓包完美修正)
+    NET_MODES = {
+        "5G/4G/3G": "WL_AND_5G",
+        "NSA": "LTE_AND_5G", 
+        "SA": "Only_5G",
+        "4G/3G": "WCDMA_AND_LTE",
+        "4G": "Only_LTE",
+        "3G": "Only_WCDMA"
+    }
+    net_mode_checkboxes = {}
+
     LABEL_W = 75 # 表单左侧标签适应宽度
 
     # ==============================================
@@ -102,7 +113,7 @@ async def main(page: ft.Page):
         return ft.Row(controls, wrap=True, spacing=5, run_spacing=0)
 
     # ==============================================
-    # 频段选择事件处理
+    # 频段与网络选择事件处理
     # ==============================================
     def lte_checkbox_change(e):
         band_id = e.control.data
@@ -118,6 +129,17 @@ async def main(page: ft.Page):
         band_id = e.control.data
         if e.control.value: nr_nsa_selected.add(band_id)
         elif band_id in nr_nsa_selected: nr_nsa_selected.remove(band_id)
+
+    def net_mode_change(e):
+        # 单选逻辑：打勾当前项时，取消其他所有项的打勾
+        if e.control.value:
+            for name, cb in net_mode_checkboxes.items():
+                if cb != e.control:
+                    cb.value = False
+        else:
+            # 防止全部取消，必须至少选一个
+            e.control.value = True
+        page.update()
 
     # ==============================================
     # 核心交互工具
@@ -218,6 +240,15 @@ async def main(page: ft.Page):
                 rb_dod = res.get("reboot_dod", "1")
                 if any(o.key == rb_dod for o in rb_interval.options): rb_interval.value = rb_dod
             except Exception as e: pass
+
+            # 读取当前网络锁定状态并回显到打勾状态
+            try:
+                bearer_res = app_state["session"].get(f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd=BearerPreference").json()
+                current_bearer = bearer_res.get("BearerPreference", "")
+                if current_bearer:
+                    for name, cb in net_mode_checkboxes.items():
+                        cb.value = (NET_MODES[name] == current_bearer)
+            except Exception: pass
 
             status_text.value = "✅ 数据读取成功" + (" | 开发者已解锁" if app_state["dev_unlocked"] else " | ⚠️ 开发者未解锁")
             status_text.color = ft.Colors.GREEN if app_state["dev_unlocked"] else ft.Colors.ORANGE
@@ -370,6 +401,43 @@ async def main(page: ft.Page):
             status_text.color = ft.Colors.GREEN
         else:
             status_text.value = "❌ 保存失败"
+            status_text.color = ft.Colors.RED
+        page.update()
+
+    # ⚠️ 网络模式锁定：先断网，修改完成后再恢复联网
+    async def apply_net_mode(e):
+        selected_val = "WL_AND_5G"
+        for name, cb in net_mode_checkboxes.items():
+            if cb.value:
+                selected_val = NET_MODES[name]
+                break
+                
+        status_text.value = "正在断开移动数据网络..."
+        status_text.color = ft.Colors.ORANGE
+        page.update()
+        
+        # 1. 断开网络连接 (带 notCallback 参数)
+        execute_post("DISCONNECT_NETWORK", {"notCallback": "true"})
+        await asyncio.sleep(1) # 缓冲1秒等待设备处理断网
+        
+        status_text.value = "网络已断开，正在下发锁定配置..."
+        page.update()
+        
+        # 2. 调用中兴网络模式设置接口 (使用完美匹配的字典值)
+        ok = execute_post("SET_BEARER_PREFERENCE", {"BearerPreference": selected_val})
+        await asyncio.sleep(1) # 缓冲1秒等待设备保存配置
+        
+        status_text.value = "配置已下发，正在恢复网络连接..."
+        page.update()
+        
+        # 3. 恢复数据网络连接 (带上抓包发现的 notCallback 参数)
+        execute_post("CONNECT_NETWORK", {"notCallback": "true"})
+        
+        if ok:
+            status_text.value = f"✅ 网络模式已更改为 {name}，并已重新连网"
+            status_text.color = ft.Colors.GREEN
+        else:
+            status_text.value = "❌ 设置失败，请确认开发者权限是否解锁"
             status_text.color = ft.Colors.RED
         page.update()
 
@@ -776,6 +844,25 @@ async def main(page: ft.Page):
     ], value="10")
     btn_wifi_sleep = ft.ElevatedButton("保存休眠设置", on_click=wifi_sleep_click)
 
+    # ----------------------------------------------
+    # 网络锁定 UI 
+    # ----------------------------------------------
+    net_mode_controls = []
+    for name in NET_MODES.keys():
+        cb = ft.Checkbox(
+            label=name, 
+            value=(name == "WL_AND_5G"), # 默认高亮勾选第一项 (注意这里也更新了默认值判断)
+            on_change=net_mode_change
+        )
+        net_mode_checkboxes[name] = cb
+        # xs: 极小屏占半行(6/12), sm: 小屏占1/3(4/12), md: 中大屏占1/4(3/12)
+        net_mode_controls.append(
+            ft.Container(content=cb, col={"xs": 6, "sm": 4, "md": 3}, padding=0, margin=0)
+        )
+
+    net_mode_grid = ft.ResponsiveRow(net_mode_controls, run_spacing=0, spacing=0)
+    btn_net_mode_apply = ft.ElevatedButton("应用网络锁定", on_click=apply_net_mode)
+
     lte_grid = create_checkbox_grid(LTE_BANDS, "B", lte_selected, lte_checkboxes, lte_checkbox_change)
     sa_grid = create_checkbox_grid(NR_SA_BANDS, "N", nr_sa_selected, sa_checkboxes, sa_checkbox_change)
     nsa_grid = create_checkbox_grid(NR_NSA_BANDS, "N", nr_nsa_selected, nsa_checkboxes, nsa_checkbox_change)
@@ -824,6 +911,11 @@ async def main(page: ft.Page):
             ft.Divider(height=10),
             ft.Text("📶 WiFi省电休眠", weight=ft.FontWeight.BOLD),
             wifi_sleep, btn_wifi_sleep,
+            ft.Container(height=15),
+
+            ft.Text("🌐 网络模式锁定", weight=ft.FontWeight.BOLD),
+            net_mode_grid, 
+            btn_net_mode_apply,
             ft.Container(height=15),
 
             ft.Row([

@@ -147,6 +147,21 @@ async def main(page: ft.Page):
     # ==============================================
     # 核心交互工具
     # ==============================================
+    def show_toast(msg, is_success=True):
+        bg_color = ft.Colors.GREEN_700 if is_success else ft.Colors.RED_700
+        icon = "✅ " if is_success else "❌ "
+        
+        snack = ft.SnackBar(
+            content=ft.Text(f"{icon}{msg}", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+            bgcolor=bg_color,
+            duration=5000,
+            behavior=ft.SnackBarBehavior.FLOATING
+        )
+        # Flet 0.85+ 官方指定弹窗方式
+        page.overlay.append(snack)
+        snack.open = True
+        page.update()
+
     def get_latest_ld():
         try:
             res = app_state["session"].get(f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd=LD").json()
@@ -226,7 +241,7 @@ async def main(page: ft.Page):
                     cell_earfcn.value = ""
                     cell_band.value = "1"
                     cell_scs.value = "15"
-            except Exception as e: pass
+            except Exception as e_inner: pass
 
             try:
                 rb_en = res.get("reboot_schedule_enable", "0")
@@ -241,15 +256,12 @@ async def main(page: ft.Page):
                 for cb in week_cbs: cb.value = cb.data in selected_weeks
                 rb_dod = res.get("reboot_dod", "1")
                 if any(o.key == rb_dod for o in rb_interval.options): rb_interval.value = rb_dod
-            except Exception as e: pass
+            except Exception as e_inner: pass
 
-            # ---------------------------------------------------------
             # 🎯 精准请求网络锁定状态 (net_select键名)
-            # ---------------------------------------------------------
             try:
                 net_url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={API_KEY_READ}"
                 net_res = app_state["session"].get(net_url, timeout=3).json()
-                
                 # 获取 net_select 的值，统一转大写避免大小写混用
                 current_bearer = str(net_res.get(API_KEY_READ, "")).strip().upper()
 
@@ -262,22 +274,23 @@ async def main(page: ft.Page):
                             net_mode_checkboxes[name].value = True
                             matched = True
                             break
-                            
                     # 容错兜底：如果获取到了值但完全不认识，默认高亮第一项防报错
                     if not matched:
                         for cb in net_mode_checkboxes.values(): cb.value = False
                         net_mode_checkboxes["5G/4G/3G"].value = True
-            except Exception as e:
+            except Exception as e_inner:
                 pass
-            # ---------------------------------------------------------
 
             status_text.value = "✅ 数据读取成功" + (" | 开发者已解锁" if app_state["dev_unlocked"] else " | ⚠️ 开发者未解锁")
             status_text.color = ft.Colors.GREEN if app_state["dev_unlocked"] else ft.Colors.ORANGE
             
             fetch_realtime_stats()
+            # 如果是用户手动点击刷新，给个小提示
+            if e: show_toast("数据刷新成功，请确保已登录", True)
         except Exception:
             status_text.value = "⚠️ 读取失败，请检查连接"
             status_text.color = ft.Colors.RED
+            if e: show_toast("数据读取失败，请检查连接", False)
             page.update()
 
     # ==============================================
@@ -391,26 +404,26 @@ async def main(page: ft.Page):
     # 动作按钮执行
     # ==============================================
     def reboot_click(e):
-        status_text.value = "🔄 正在发送重启指令..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
+        show_toast("正在发送重启指令...", True)
         if execute_post("REBOOT_DEVICE", {}):
             status_text.value = "✅ 重启指令已发送，设备即将重启"
             status_text.color = ft.Colors.RED
+            show_toast("设备即将重启", True)
         else:
             status_text.value = "❌ 重启失败"
             status_text.color = ft.Colors.RED
+            show_toast("设备重启失败", False)
         page.update()
 
     def wifi_sleep_click(e):
-        status_text.value = "正在保存休眠设置..."
-        page.update()
         if execute_post("SET_WIFI_SLEEP_INFO", {"sysIdleTimeToSleep": wifi_sleep.value}):
             status_text.value = "✅ WiFi休眠设置已保存"
             status_text.color = ft.Colors.GREEN
+            show_toast("WiFi休眠设置保存成功", True)
         else:
             status_text.value = "❌ 保存失败"
             status_text.color = ft.Colors.RED
+            show_toast("WiFi休眠设置保存失败", False)
         page.update()
 
     async def apply_net_mode(e):
@@ -420,14 +433,10 @@ async def main(page: ft.Page):
                 selected_write_val = NET_CONFIG[name]["write_val"]
                 break
                 
-        status_text.value = "正在下发网络锁定配置..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
-
+        show_toast("正在下发网络锁定配置...", True)
         execute_post("DISCONNECT_NETWORK", {"notCallback": "true"})
         await asyncio.sleep(0.4) 
       
-        # 使用抓包确认的写键: BearerPreference
         ok_set = execute_post("SET_BEARER_PREFERENCE", {API_KEY_WRITE: selected_write_val})
         await asyncio.sleep(0.4) 
         
@@ -436,89 +445,79 @@ async def main(page: ft.Page):
         if ok_set and ok_connect:
             status_text.value = "✅ 网络模式切换成功 (请等待5秒后刷新状态)"
             status_text.color = ft.Colors.GREEN
+            show_toast("网络切换成功，再次切换需等待5秒", True)
         else:
             status_text.value = "❌ 设置失败 (配置未生效或操作期间被挤下线)"
             status_text.color = ft.Colors.RED
-        
+            show_toast("网络切换失败 (可能被挤下线)", False)
         page.update()
 
     def lte_band_apply(e):
         if not lte_selected:
-            status_text.value = "⚠️ 请至少勾选一个4G频段"
-            status_text.color = ft.Colors.RED
-            page.update()
+            show_toast("⚠️ 请至少勾选一个4G频段", False)
             return
-        status_text.value = "下发4G频段配置..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
+        
         ok = execute_post("BAND_SELECT", {"is_gw_band": "0", "gw_band_mask": "0", "is_lte_band": "1", "lte_band_mask": lte_bands_to_mask(list(lte_selected))})
         if ok:
-            status_text.value = "✅ 4G频段设置完成，重启生效"
+            status_text.value = "✅ 4G频段设置完成"
             status_text.color = ft.Colors.GREEN
+            show_toast("4G频段设置成功", True)
         else:
             status_text.value = "❌ 设置失败，确认开发者权限已解锁"
             status_text.color = ft.Colors.RED
+            show_toast("4G频段设置失败，请确认开发者权限", False)
         page.update()
 
     def nr_sa_apply(e):
         if not nr_sa_selected:
-            status_text.value = "⚠️ 请至少勾选一个5G SA频段"
-            status_text.color = ft.Colors.RED
-            page.update()
+            show_toast("⚠️ 请至少勾选一个5G SA频段", False)
             return
-        status_text.value = "下发5G SA频段配置..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
+            
         ok = execute_post("WAN_PERFORM_NR5G_SANSA_BAND_LOCK", {"nr5g_band_mask": ",".join(sorted(nr_sa_selected, key=int)), "type": "0"})
         if ok:
-            status_text.value = "✅ 5G SA频段设置完成，重启生效"
+            status_text.value = "✅ 5G SA频段设置完成"
             status_text.color = ft.Colors.GREEN
+            show_toast("5G SA频段设置成功", True)
         else:
             status_text.value = "❌ 设置失败，确认开发者权限已解锁"
             status_text.color = ft.Colors.RED
+            show_toast("5G SA频段设置失败，请确认开发者权限", False)
         page.update()
 
     def nr_nsa_apply(e):
         if not nr_nsa_selected:
-            status_text.value = "⚠️ 请至少勾选一个5G NSA频段"
-            status_text.color = ft.Colors.RED
-            page.update()
+            show_toast("⚠️ 请至少勾选一个5G NSA频段", False)
             return
-        status_text.value = "下发5G NSA频段配置..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
+            
         ok = execute_post("WAN_PERFORM_NR5G_SANSA_BAND_LOCK", {"nr5g_band_mask": ",".join(sorted(nr_nsa_selected, key=int)), "type": "1"})
         if ok:
-            status_text.value = "✅ 5G NSA频段设置完成，重启生效"
+            status_text.value = "✅ 5G NSA频段设置完成"
             status_text.color = ft.Colors.GREEN
+            show_toast("5G NSA频段设置成功", True)
         else:
             status_text.value = "❌ 设置失败，确认开发者权限已解锁"
             status_text.color = ft.Colors.RED
+            show_toast("5G NSA频段设置失败，请确认开发者权限", False)
         page.update()
 
     def cell_lock_apply(e):
         if not cell_pci.value or not cell_earfcn.value:
-            status_text.value = "⚠️ 填写PCI与EARFCN"
-            status_text.color = ft.Colors.RED
-            page.update()
+            show_toast("⚠️ 请填写PCI与EARFCN", False)
             return
-        status_text.value = "下发锁小区配置..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
+            
         lock_val = f"{cell_pci.value.strip()},{cell_earfcn.value.strip()},{cell_band.value},{cell_scs.value}"
         ok = execute_post("NR5G_LOCK_CELL_SET", {"nr5g_cell_lock": lock_val})
         if ok:
-            status_text.value = "✅ 锁小区配置下发完成，重启生效"
+            status_text.value = "✅ 锁小区配置下发完成"
             status_text.color = ft.Colors.GREEN
+            show_toast("锁小区成功", True)
         else:
             status_text.value = "❌ 锁小区失败，确认开发者权限已解锁"
             status_text.color = ft.Colors.RED
+            show_toast("锁小区失败，请确认开发者权限", False)
         page.update()
 
     def cell_unlock_click(e):
-        status_text.value = "清除锁小区配置..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
         if execute_post("NR5G_LOCK_CELL_SET", {"nr5g_cell_lock": "1,1,1,1"}):
             cell_pci.value = ""
             cell_earfcn.value = ""
@@ -526,16 +525,14 @@ async def main(page: ft.Page):
             cell_scs.value = "15"
             status_text.value = "✅ 小区锁定已解除"
             status_text.color = ft.Colors.GREEN
+            show_toast("小区锁定已解除", True)
         else:
             status_text.value = "❌ 解除失败，确认开发者权限已解锁"
             status_text.color = ft.Colors.RED
+            show_toast("解除锁定失败", False)
         page.update()
 
     def save_schedule_reboot(e):
-        status_text.value = "下发定时重启配置..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
-
         weeks = ",".join([cb.data for cb in week_cbs if cb.value])
         hr = rb_time_hr.value.zfill(2)
         mn = rb_time_min.value.zfill(2)
@@ -554,13 +551,14 @@ async def main(page: ft.Page):
             "reboot_dod": rb_interval.value
         }
 
-        ok = execute_post("FIX_TIME_REBOOT_SCHEDULE", payload)
-        if ok:
+        if execute_post("FIX_TIME_REBOOT_SCHEDULE", payload):
             status_text.value = "✅ 定时重启配置已保存"
             status_text.color = ft.Colors.GREEN
+            show_toast("定时重启配置保存成功，请确保已开启功能", True)
         else:
             status_text.value = "❌ 保存失败，请检查连接状态"
             status_text.color = ft.Colors.RED
+            show_toast("定时重启配置保存失败", False)
         page.update()
 
     # ==============================================
@@ -611,6 +609,7 @@ async def main(page: ft.Page):
                 login_view.visible = False
                 main_view.visible = True
                 refresh_data()
+                show_toast("登录成功", True)
             else:
                 await page.shared_preferences.remove("saved_ip")
                 await page.shared_preferences.remove("saved_pwd")
@@ -618,27 +617,24 @@ async def main(page: ft.Page):
                 pwd_input.value = "" 
                 login_status.value = "❌ 密码错误或账号锁定"
                 login_status.color = ft.Colors.RED
+                show_toast("密码错误或账号锁定", False)
         except Exception:
             await page.shared_preferences.remove("saved_ip")
             await page.shared_preferences.remove("saved_pwd")
             remember_cb.value = False
-            login_status.value = "❌ 连接失败，检查地址和网络"
+            login_status.value = "❌ 连接失败，请检查地址和网络"
             login_status.color = ft.Colors.RED
+            show_toast("连接失败，请检查地址和网络", False)
             
         login_btn.disabled = False
         page.update()
 
     async def relogin_click(e):
         if not app_state["ip"] or not app_state["password"]:
-            status_text.value = "⚠️ 本地无缓存密码，请退出重启APP"
-            status_text.color = ft.Colors.RED
-            page.update()
+            show_toast("本地无缓存密码，请重启APP", False)
             return
             
-        status_text.value = "🔄 正在尝试重新登入并解锁开发者..."
-        status_text.color = ft.Colors.ORANGE
-        page.update()
-        
+        show_toast("正在重登...", True)
         await asyncio.sleep(0.01) 
         
         ip = app_state["ip"]
@@ -663,16 +659,20 @@ async def main(page: ft.Page):
                 if unlock_developer():
                     status_text.value = "✅ 重登成功并已解锁开发者权限"
                     status_text.color = ft.Colors.GREEN
+                    show_toast("重登成功，开发者解锁成功", True)
                 else:
-                    status_text.value = "⚠️ 重登成功，但开发者解锁失败"
+                    status_text.value = "⚠️ 重登成功，开发者解锁失败"
                     status_text.color = ft.Colors.ORANGE
+                    show_toast("重登成功，开发者解锁失败", False)
                 refresh_data()
             else:
                 status_text.value = "❌ 重新登录失败，可能密码已修改或被锁定"
                 status_text.color = ft.Colors.RED
+                show_toast("重登失败", False)
         except Exception:
             status_text.value = "❌ 重登连接失败，请检查网络"
             status_text.color = ft.Colors.RED
+            show_toast("连接失败，请检查网络", False)
             
         page.update()
 
@@ -823,7 +823,6 @@ async def main(page: ft.Page):
     btn_wifi_sleep = ft.ElevatedButton("保存休眠设置", on_click=wifi_sleep_click)
 
     net_mode_controls = []
-    # 使用 NET_CONFIG 动态生成网络锁定勾选框
     for name in NET_CONFIG.keys():
         cb = ft.Checkbox(label=name, value=(name == "5G/4G/3G"), on_change=net_mode_change)
         net_mode_checkboxes[name] = cb

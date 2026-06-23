@@ -82,17 +82,22 @@ async def main(page: ft.Page):
     sa_checkboxes = {}
     nsa_checkboxes = {}
 
-    # 中兴网络模式的后端对应值
-    NET_MODES = {
-        "5G/4G/3G": "WL_AND_5G",
-        "NSA": "LTE_AND_5G", 
-        "SA": "Only_5G",
-        "4G/3G": "WCDMA_AND_LTE",
-        "4G": "Only_LTE",
-        "3G": "Only_WCDMA"
-    }
-    net_mode_checkboxes = {}
+    # ==============================================
+    # 网络模式配置字典 (分离机制)
+    # ==============================================
+    API_KEY_WRITE = "BearerPreference"  # 写入时的键名
+    API_KEY_READ  = "net_select"        # 读取时的键名
 
+    NET_CONFIG = {
+        "5G/4G/3G": {"write_val": "WL_AND_5G",     "read_val": "WL_AND_5G"},
+        "NSA":      {"write_val": "LTE_AND_5G",    "read_val": "LTE_AND_5G"},
+        "SA":       {"write_val": "Only_5G",       "read_val": "ONLY_5G"}, 
+        "4G/3G":    {"write_val": "WCDMA_AND_LTE", "read_val": "WCDMA_AND_LTE"},
+        "4G":       {"write_val": "Only_LTE",      "read_val": "ONLY_LTE"},
+        "3G":       {"write_val": "Only_WCDMA",    "read_val": "ONLY_WCDMA"}
+    }
+    
+    net_mode_checkboxes = {}
     LABEL_W = 75 # 表单左侧标签适应宽度
 
     # ==============================================
@@ -131,13 +136,11 @@ async def main(page: ft.Page):
         elif band_id in nr_nsa_selected: nr_nsa_selected.remove(band_id)
 
     def net_mode_change(e):
-        # 单选逻辑：打勾当前项时，取消其他所有项的打勾
         if e.control.value:
             for name, cb in net_mode_checkboxes.items():
                 if cb != e.control:
                     cb.value = False
         else:
-            # 防止全部取消，必须至少选一个
             e.control.value = True
         page.update()
 
@@ -177,12 +180,10 @@ async def main(page: ft.Page):
         status_text.value = "正在读取设备信息..."
         page.update()
         try:
-            # 加入 BearerPreference 进行批量获取
-            cmd = "sysIdleTimeToSleep,lte_band_lock,nr5g_sa_band_lock,nr5g_nsa_band_lock,nr5g_cell_lock,reboot_schedule_enable,reboot_schedule_mode,reboot_hour1,reboot_min1,reboot_timeframe_hours1,reboot_dow,reboot_dod,BearerPreference"
+            cmd = "sysIdleTimeToSleep,lte_band_lock,nr5g_sa_band_lock,nr5g_nsa_band_lock,nr5g_cell_lock,reboot_schedule_enable,reboot_schedule_mode,reboot_hour1,reboot_min1,reboot_timeframe_hours1,reboot_dow,reboot_dod"
             url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={cmd}&multi_data=1"
             res = app_state["session"].get(url, timeout=5).json()
 
-            # WIFI休眠与高级设置
             val = res.get("sysIdleTimeToSleep", "10")
             if val in [o.key for o in wifi_sleep.options]: wifi_sleep.value = val
 
@@ -242,18 +243,37 @@ async def main(page: ft.Page):
                 if any(o.key == rb_dod for o in rb_interval.options): rb_interval.value = rb_dod
             except Exception as e: pass
 
-            # 读取当前网络锁定状态并回显到打勾状态 (直接从 res 读取)
+            # ---------------------------------------------------------
+            # 🎯 精准请求网络锁定状态 (net_select键名)
+            # ---------------------------------------------------------
             try:
-                current_bearer = res.get("BearerPreference", "")
+                net_url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={API_KEY_READ}"
+                net_res = app_state["session"].get(net_url, timeout=3).json()
+                
+                # 获取 net_select 的值，统一转大写避免大小写混用
+                current_bearer = str(net_res.get(API_KEY_READ, "")).strip().upper()
+
                 if current_bearer:
-                    for name, cb in net_mode_checkboxes.items():
-                        cb.value = (NET_MODES[name] == current_bearer)
-            except Exception: pass
+                    matched = False
+                    for name, config in NET_CONFIG.items():
+                        if current_bearer == config["read_val"].upper():
+                            # 先清空所有的勾，再打上对应的勾
+                            for cb in net_mode_checkboxes.values(): cb.value = False
+                            net_mode_checkboxes[name].value = True
+                            matched = True
+                            break
+                            
+                    # 容错兜底：如果获取到了值但完全不认识，默认高亮第一项防报错
+                    if not matched:
+                        for cb in net_mode_checkboxes.values(): cb.value = False
+                        net_mode_checkboxes["5G/4G/3G"].value = True
+            except Exception as e:
+                pass
+            # ---------------------------------------------------------
 
             status_text.value = "✅ 数据读取成功" + (" | 开发者已解锁" if app_state["dev_unlocked"] else " | ⚠️ 开发者未解锁")
             status_text.color = ft.Colors.GREEN if app_state["dev_unlocked"] else ft.Colors.ORANGE
             
-            # 手动刷新也会立刻更新一次面板的纯展示数据
             fetch_realtime_stats()
         except Exception:
             status_text.value = "⚠️ 读取失败，请检查连接"
@@ -266,19 +286,16 @@ async def main(page: ft.Page):
     def fetch_realtime_stats():
         if not app_state["session"]: return
         try:
-            # 加入了 4G 的 band/频点/信号数据抓取，支持和 5G 混编展示
             cmd = "battery_value,battery_charging,network_type,wan_ipaddr,Z5g_rsrp,Z5g_SINR,nr5g_pci,nr5g_action_channel,pm_sensor_mdm,battery_temp,pm_sensor_pa1,realtime_tx_thrpt,realtime_rx_thrpt,realtime_tx_bytes,realtime_rx_bytes,monthly_tx_bytes,monthly_rx_bytes,wan_active_band,nr5g_action_band,wan_active_channel,lte_pci,lte_rsrp,lte_snr"
             url = f"{app_state['ip']}/goform/goform_get_cmd_process?isTest=false&cmd={cmd}&multi_data=1"
             res = app_state["session"].get(url, timeout=2).json()
 
-            # --- 网络类型与频段拼接逻辑 ---
             net_type = res.get('network_type', '?')
             lte_band = str(res.get('wan_active_band', '')).strip()
             nr_band = str(res.get('nr5g_action_band', '')).strip()
 
             band_display = ""
             if '5G' in net_type.upper() or 'SA' in net_type.upper() or 'NSA' in net_type.upper():
-                # 对于 5G 优先显示 nr_band，NSA可能回退显示
                 band_display = nr_band if nr_band else lte_band
             else:
                 band_display = lte_band
@@ -288,7 +305,6 @@ async def main(page: ft.Page):
             else:
                 txt_network.value = f"网络: {net_type}"
             
-            # --- 电池逻辑 ---
             battery_val = str(res.get('battery_value', '?'))
             charging_flag = str(res.get('battery_charging', ''))
             charge_str = "充电中" if charging_flag in ['1', '2'] else "未充电"
@@ -296,7 +312,6 @@ async def main(page: ft.Page):
             
             txt_wan_ip.value = f"WAN IP: {res.get('wan_ipaddr', '未分配')}"
 
-            # --- 网速与流量更新 ---
             tx_speed = res.get("realtime_tx_thrpt", 0)
             rx_speed = res.get("realtime_rx_thrpt", 0)
             txt_tx_speed.value = f"上传速度: {format_bytes(tx_speed)}/s"
@@ -309,7 +324,6 @@ async def main(page: ft.Page):
             txt_traffic_rt.value = f"本次流量: {format_bytes(rt_tx_bytes + rt_rx_bytes)}"
             txt_traffic_mo.value = f"当月流量: {format_bytes(mo_tx_bytes + mo_rx_bytes)}"
 
-            # --- 信号自适应更新 (4G/5G通用) ---
             freq_5g = str(res.get("nr5g_action_channel", "")).strip()
             freq_4g = str(res.get("wan_active_channel", "")).strip()
             freq_val = freq_5g if freq_5g else freq_4g
@@ -337,16 +351,13 @@ async def main(page: ft.Page):
             txt_rsrp.value = f"信号强度: {rsrp_val if rsrp_val else '--'} dBm"
             txt_sinr.value = f"信噪比: {sinr_val if sinr_val else '--'} dB"
 
-            # --- 温度更新 ---
             txt_temp_bat.value = f"电池温度: {res.get('battery_temp', '--')}℃"
             txt_temp_mdm.value = f"4G Modem: {res.get('pm_sensor_mdm', '--')}℃"
             txt_temp_pa.value  = f"PA: {res.get('pm_sensor_pa1', '--')}℃"
 
-            # ================= 自动刷新接入设备数量 =================
             try:
                 s = app_state["session"]
                 ip_addr = app_state["ip"]
-                # 加上 timeout 防止局域网卡顿导致页面失去响应
                 wifi_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=station_list", timeout=2).json()
                 lan_ret = s.get(f"{ip_addr}/goform/goform_get_cmd_process?isTest=false&cmd=lan_station_list", timeout=2)
                 
@@ -363,15 +374,13 @@ async def main(page: ft.Page):
                     if mac: mac_set.add(mac)
                 txt_users.value = f"接入设备: {len(mac_set)} 台"
             except Exception:
-                pass # 忽略错误，防止抓取设备列表超时导致整个面板不刷新
-            # ========================================================
+                pass 
 
             txt_local_time.value = f"设备当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
             page.update()
         except Exception:
-            pass # 静默处理
+            pass 
 
-    # 后台异步任务：每秒轮询一次纯展示数据
     async def auto_refresh_task():
         while True:
             await asyncio.sleep(1)
@@ -404,32 +413,28 @@ async def main(page: ft.Page):
             status_text.color = ft.Colors.RED
         page.update()
 
-    # ⚠️ 网络模式锁定：先断网，修改完成后再恢复联网 (此操作无需开发者模式)
     async def apply_net_mode(e):
-        selected_val = "WL_AND_5G"
+        selected_write_val = "WL_AND_5G"
         for name, cb in net_mode_checkboxes.items():
             if cb.value:
-                selected_val = NET_MODES[name]
+                selected_write_val = NET_CONFIG[name]["write_val"]
                 break
                 
         status_text.value = "正在下发网络锁定配置..."
         status_text.color = ft.Colors.ORANGE
         page.update()
 
-        # 1. 尝试断网
         execute_post("DISCONNECT_NETWORK", {"notCallback": "true"})
-        await asyncio.sleep(0.4) # 仅保留 0.4 秒
+        await asyncio.sleep(0.4) 
       
-        # 2. 下发网络模式配置
-        ok_set = execute_post("SET_BEARER_PREFERENCE", {"BearerPreference": selected_val})
-        await asyncio.sleep(0.4) # 仅保留 0.4 秒
+        # 使用抓包确认的写键: BearerPreference
+        ok_set = execute_post("SET_BEARER_PREFERENCE", {API_KEY_WRITE: selected_write_val})
+        await asyncio.sleep(0.4) 
         
-        # 3. 恢复重新联网
         ok_connect = execute_post("CONNECT_NETWORK", {"notCallback": "true"})
         
-        # 4. 结果判定
         if ok_set and ok_connect:
-            status_text.value = "✅ 网络模式切换成功"
+            status_text.value = "✅ 网络模式切换成功 (请等待5秒后刷新状态)"
             status_text.color = ft.Colors.GREEN
         else:
             status_text.value = "❌ 设置失败 (配置未生效或操作期间被挤下线)"
@@ -623,7 +628,6 @@ async def main(page: ft.Page):
         login_btn.disabled = False
         page.update()
 
-    # 防挤占一键重登功能
     async def relogin_click(e):
         if not app_state["ip"] or not app_state["password"]:
             status_text.value = "⚠️ 本地无缓存密码，请退出重启APP"
@@ -714,9 +718,6 @@ async def main(page: ft.Page):
     txt_wan_ip  = ft.Text("WAN IP: --", size=14)
     txt_users   = ft.Text("接入设备: --", size=14)
 
-    # ----------------------------------------------
-    # 网速与流量
-    # ----------------------------------------------
     txt_tx_speed = ft.Text("上传速度: --", size=14)
     txt_rx_speed = ft.Text("下载速度: --", size=14)
     txt_traffic_rt = ft.Text("本次流量: --", size=14)
@@ -727,9 +728,7 @@ async def main(page: ft.Page):
 
     col_traffic = ft.Column([txt_traffic_rt, txt_traffic_mo], spacing=4)
     row_traffic = build_status_row("📊", col_traffic)
-    # ----------------------------------------------
 
-    # 适配自适应通用信号
     txt_freq = ft.Text("频点: --", size=13, color=ft.Colors.GREY_800)
     txt_pci  = ft.Text("PCI: --", size=13, color=ft.Colors.GREY_800)
     txt_rsrp = ft.Text("信号强度: --", size=13, color=ft.Colors.GREY_800)
@@ -768,9 +767,6 @@ async def main(page: ft.Page):
         padding=15, bgcolor=ft.Colors.BLUE_50, border_radius=10
     )
 
-    # ----------------------------------------------
-    # ⏱️ 定时重启卡片构建
-    # ----------------------------------------------
     txt_local_time = ft.Text("设备当前时间: --", size=12, color=ft.Colors.GREY_600)
     reboot_enable = ft.Switch(label="启用定时重启功能", value=False)
     
@@ -790,19 +786,12 @@ async def main(page: ft.Page):
     
     row_weeks = ft.ResponsiveRow(
         controls=[
-            ft.Container(
-                content=cb, 
-                col={"xs": 4, "sm": 3, "md": 2}, 
-                padding=0, 
-                margin=0
-            ) for cb in week_cbs
+            ft.Container(content=cb, col={"xs": 4, "sm": 3, "md": 2}, padding=0, margin=0) for cb in week_cbs
         ],
-        run_spacing=0, 
-        spacing=0
+        run_spacing=0, spacing=0
     )
 
     rb_interval = ft.Dropdown(label="间隔天数", options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], value="1")
-
     btn_save_reboot = ft.ElevatedButton("保存重启规则", on_click=save_schedule_reboot)
 
     reboot_card = ft.Container(
@@ -814,24 +803,17 @@ async def main(page: ft.Page):
             row_time,
             reboot_mode,
             ft.Divider(height=5),
-            
             ft.Text("🔹 选项1: 按周触发 (仅在重启模式选 1 时生效)", size=13, color=ft.Colors.BLUE_700, weight=ft.FontWeight.BOLD),
             row_weeks,
-            
             ft.Container(height=5),
-            
             ft.Text("🔹 选项2: 间隔触发 (仅在重启模式选 2 时生效)", size=13, color=ft.Colors.ORANGE_700, weight=ft.FontWeight.BOLD),
             rb_interval,
-            
             ft.Container(height=10),
             btn_save_reboot
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
         padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10
     )
 
-    # ----------------------------------------------
-    # 高级设置卡片
-    # ----------------------------------------------
     wifi_sleep = ft.Dropdown(label="WiFi空闲休眠", options=[
         ft.dropdown.Option("0", "永不休眠"), ft.dropdown.Option("5", "5分钟"),
         ft.dropdown.Option("10", "10分钟"), ft.dropdown.Option("20", "20分钟"),
@@ -840,21 +822,12 @@ async def main(page: ft.Page):
     ], value="10")
     btn_wifi_sleep = ft.ElevatedButton("保存休眠设置", on_click=wifi_sleep_click)
 
-    # ----------------------------------------------
-    # 网络锁定 UI 
-    # ----------------------------------------------
     net_mode_controls = []
-    for name in NET_MODES.keys():
-        cb = ft.Checkbox(
-            label=name, 
-            value=(name == "5G/4G/3G"), # 登录初始化显示：默认高亮勾选第一项
-            on_change=net_mode_change
-        )
+    # 使用 NET_CONFIG 动态生成网络锁定勾选框
+    for name in NET_CONFIG.keys():
+        cb = ft.Checkbox(label=name, value=(name == "5G/4G/3G"), on_change=net_mode_change)
         net_mode_checkboxes[name] = cb
-        # xs: 极小屏占半行(6/12), sm: 小屏占1/3(4/12), md: 中大屏占1/4(3/12)
-        net_mode_controls.append(
-            ft.Container(content=cb, col={"xs": 6, "sm": 4, "md": 3}, padding=0, margin=0)
-        )
+        net_mode_controls.append(ft.Container(content=cb, col={"xs": 6, "sm": 4, "md": 3}, padding=0, margin=0))
 
     net_mode_grid = ft.ResponsiveRow(net_mode_controls, run_spacing=0, spacing=0)
     btn_net_mode_apply = ft.ElevatedButton("应用网络锁定", on_click=apply_net_mode)
@@ -868,16 +841,10 @@ async def main(page: ft.Page):
     btn_nsa_apply = ft.ElevatedButton("应用 5G NSA 锁频段", on_click=nr_nsa_apply)
 
     cell_pci = ft.TextField(expand=True)
-    row_pci = ft.Row([
-        ft.Row([ft.Text("PCI"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W),
-        cell_pci
-    ], spacing=10)
+    row_pci = ft.Row([ft.Row([ft.Text("PCI"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W), cell_pci], spacing=10)
 
     cell_earfcn = ft.TextField(expand=True)
-    row_earfcn = ft.Row([
-        ft.Row([ft.Text("EARFCN"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W),
-        cell_earfcn
-    ], spacing=10)
+    row_earfcn = ft.Row([ft.Row([ft.Text("EARFCN"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W), cell_earfcn], spacing=10)
 
     cell_band = ft.Dropdown(expand=True, options=[
         ft.dropdown.Option("1", "频段 1"), ft.dropdown.Option("3", "频段 3"),
@@ -894,7 +861,6 @@ async def main(page: ft.Page):
     cell_tip = ft.Text("设备重启后生效", size=13, color=ft.Colors.GREY_700, text_align=ft.TextAlign.CENTER)
     
     btn_cell_apply = ft.ElevatedButton("应用锁小区", on_click=cell_lock_apply, height=45)
-    
     btn_cell_unlock = ft.ElevatedButton("清除锁定", on_click=cell_unlock_click, height=45, color=ft.Colors.RED, expand=True)
     btn_cell_reboot = ft.ElevatedButton("重启设备", on_click=reboot_click, height=45, color=ft.Colors.RED, expand=True)
 
@@ -945,13 +911,9 @@ async def main(page: ft.Page):
         padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10
     )
 
-    # ----------------------------------------------
-    # 包含重登按钮的 Header (物理占位对齐，彻底避开 margin 报错)
-    # ----------------------------------------------
     relogin_btn = ft.Container(
         content=ft.Column(
             [
-                #LOGIN 图标
                 ft.Icon(ft.Icons.SWITCH_ACCOUNT, color=ft.Colors.BLUE_700, size=24),
                 ft.Text("重登", size=11, color=ft.Colors.BLUE_700, weight=ft.FontWeight.BOLD)
             ],
@@ -967,13 +929,8 @@ async def main(page: ft.Page):
 
     title_row = ft.Row(
         [
-            # 左侧：用 9px 的空白 Container 硬顶过去，加上 40px 的按钮，总共 49px，对齐下方图标
             ft.Row([ft.Container(width=9), relogin_btn], spacing=0), 
-            
-            # 中间：标题开启 expand 自动伸缩居中
             ft.Text("📊 设备状态", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, expand=True),
-            
-            # 右侧：对称放一个 49px 的空白块，保证中间标题绝对居中
             ft.Container(width=49) 
         ],
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -987,10 +944,8 @@ async def main(page: ft.Page):
             status_card,
             ft.Row([btn_refresh, btn_reboot_top], spacing=10),
             ft.Container(height=10),
-            
             reboot_card,
             ft.Container(height=10),
-            
             setting_card,
             ft.Container(height=30)
         ],
@@ -999,13 +954,8 @@ async def main(page: ft.Page):
     )
 
     page.add(login_view, main_view)
-    
-    # 挂载 1 秒轮询任务到 asyncio 的事件循环中
     asyncio.create_task(auto_refresh_task())
 
-    # ----------------------------------------------
-    # 自动登录触发逻辑
-    # ----------------------------------------------
     if saved_pwd and saved_ip:
         await login_click(None)
 

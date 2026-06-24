@@ -59,12 +59,6 @@ async def main(page: ft.Page):
     page.padding = 0
     page.theme_mode = ft.ThemeMode.LIGHT
 
-    # 隐藏设备系统状态栏 (全屏模式)
-    try:
-        page.window.full_screen = True
-    except AttributeError:
-        page.window_full_screen = True
-
     # 启用 Flet 0.80.0+ 官方最新的本地持久化存储服务
     prefs = ft.SharedPreferences()
 
@@ -976,10 +970,10 @@ async def main(page: ft.Page):
         if fab_state["task"]:
             fab_state["task"].cancel()
         
-        # 定义一个 4 秒后的自动缩回逻辑，防呆设计
+        # 定义一个 3 秒后的自动缩回逻辑，防呆设计
         async def auto_collapse():
             try:
-                await asyncio.sleep(4)
+                await asyncio.sleep(3)
                 await collapse_fab()
             except asyncio.CancelledError:
                 pass
@@ -1018,8 +1012,7 @@ async def main(page: ft.Page):
 
     fab_icon = ft.Icon(ft.Icons.CHEVRON_LEFT, color=ft.Colors.WHITE, size=20)
 
-    # 【这里已经完全去除了旧版的 ft.animation.Animation，使用最新版 ft.Animation】
-    # 【并且使用字符串 "decelerate" 彻底规避枚举可能存在的所有改名问题】
+    # 使用字符串 "decelerate" 彻底规避枚举可能存在的所有改名问题
     fab_inner = ft.Container(
         content=fab_icon,
         alignment=ft.Alignment(0, 0),
@@ -1027,7 +1020,7 @@ async def main(page: ft.Page):
         height=48, # 按钮高度
         bgcolor=ft.Colors.BLUE_700,
         border_radius=ft.BorderRadius(top_left=24, top_right=0, bottom_left=24, bottom_right=0),
-        animate=ft.Animation(250, "decelerate"), # <--- 修复点，彻底放弃废弃的子模块路径
+        animate=ft.Animation(250, "decelerate"), # 彻底放弃废弃的子模块路径
         on_click=handle_fab_click,
     )
 
@@ -1039,7 +1032,7 @@ async def main(page: ft.Page):
     fab_container = ft.Container(
         content=fab_gesture,
         right=0,  # 0像素紧贴屏幕右侧边缘
-        top=18,   # 维持与卡片标题基本平齐的高度
+        top=25,   # 精准对齐“设备状态”文字的上边缘
         visible=False 
     )
 

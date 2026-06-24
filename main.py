@@ -59,6 +59,12 @@ async def main(page: ft.Page):
     page.padding = 0
     page.theme_mode = ft.ThemeMode.LIGHT
 
+    # 隐藏设备系统状态栏 (全屏模式)
+    try:
+        page.window.full_screen = True
+    except AttributeError:
+        page.window_full_screen = True
+
     # 启用 Flet 0.80.0+ 官方最新的本地持久化存储服务
     prefs = ft.SharedPreferences()
 
@@ -960,71 +966,20 @@ async def main(page: ft.Page):
     )
 
     # ==============================================
-    # 修复：完美可拖拽的悬浮按钮 + 窗口自适应对称边界
+    # 悬浮按钮 + 窗口自适应定位 (修改后：固定在右上角)
     # ==============================================
-    # 改为从左算起的 left 坐标，配合限制器杜绝越界
-    init_w = page.width if page.width > 0 else 400
-    drag_state = {"top": 400, "left": max(0, init_w - 75)}
-
-    def ensure_fab_bounds():
-        safe_h = page.height if page.height > 0 else 800
-        safe_w = page.width if page.width > 0 else 400
-
-        #  Flet 标准悬浮按钮的物理尺寸是 56 像素
-        BTN_SIZE = 56
-        # 设置一个对称的安全边距 (如果设为 0 就是完全贴边，设为 8 就是两边各留 8 像素)
-        MARGIN = 8
-
-        # 确保上下左右极限对称
-        min_val_top = MARGIN
-        max_val_top = max(MARGIN, safe_h - BTN_SIZE - MARGIN)
-
-        min_val_left = MARGIN
-        max_val_left = max(MARGIN, safe_w - BTN_SIZE - MARGIN)
-        
-        drag_state["top"] = max(min_val_top, min(drag_state["top"], max_val_top))
-        drag_state["left"] = max(min_val_left, min(drag_state["left"], max_val_left))
-        
-        fab_container.top = drag_state["top"]
-        fab_container.left = drag_state["left"]
-        fab_container.update()
-
-    def handle_pan_update(e: ft.DragUpdateEvent):
-        try:
-            dy = e.local_delta.y
-            dx = e.local_delta.x
-        except AttributeError:
-            dy = getattr(e, "delta_y", 0)
-            dx = getattr(e, "delta_x", 0)
-            
-        drag_state["top"] += dy
-        drag_state["left"] += dx  # 正向加法，向右挪就是坐标增加
-        
-        ensure_fab_bounds()
-
-    # 只要窗口发生变化，立刻触发边界检测
-    def on_window_resize(e):
-        if fab_container.visible:
-            ensure_fab_bounds()
-
-    page.on_resize = on_window_resize
-
     relogin_fab = ft.FloatingActionButton(
         icon=ft.Icons.SWITCH_ACCOUNT,
         bgcolor=ft.Colors.BLUE_700,
-        on_click=relogin_click
+        on_click=relogin_click,
+        mini=True  # 启用 mini 模式，缩小按钮尺寸
     )
 
-    fab_gesture = ft.GestureDetector(
-        mouse_cursor=ft.MouseCursor.MOVE,
-        on_pan_update=handle_pan_update,
-        content=relogin_fab
-    )
-
+    # 悬浮按钮容器，利用 right 和 top 固定右上角
     fab_container = ft.Container(
-        content=fab_gesture,
-        left=drag_state["left"],
-        top=drag_state["top"],
+        content=relogin_fab,
+        right=18,  # 距离右侧屏幕边缘 18 像素
+        top=18,    # 距离顶部 18 像素 
         visible=False 
     )
 

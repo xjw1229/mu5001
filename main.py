@@ -542,12 +542,6 @@ async def main(page: ft.Page):
     # ==============================================
     # 登录逻辑
     # ==============================================
-    prefs = None
-    if hasattr(page, "client_storage"):
-        prefs = page.client_storage
-    elif hasattr(page, "shared_preferences"):
-        prefs = page.shared_preferences
-
     async def login_click(e=None):
         ip = ip_input.value
         pwd = pwd_input.value
@@ -966,20 +960,86 @@ async def main(page: ft.Page):
     )
 
     # ==============================================
-    # 悬浮按钮 + 窗口自适应定位 (修改后：固定在右上角)
+    # 侧边栏式悬浮按钮 (贴边停靠，点击/划出展开)
     # ==============================================
-    relogin_fab = ft.FloatingActionButton(
-        icon=ft.Icons.SWITCH_ACCOUNT,
+    fab_state = {"expanded": False, "task": None}
+
+    async def expand_fab():
+        if fab_state["expanded"]: return
+        fab_state["expanded"] = True
+        fab_inner.width = 60
+        fab_icon.name = ft.Icons.SWITCH_ACCOUNT
+        fab_icon.size = 24
+        page.update()
+        
+        # 取消可能正在运行的自动缩回任务
+        if fab_state["task"]:
+            fab_state["task"].cancel()
+        
+        # 定义一个 4 秒后的自动缩回逻辑，防呆设计
+        async def auto_collapse():
+            try:
+                await asyncio.sleep(4)
+                await collapse_fab()
+            except asyncio.CancelledError:
+                pass
+        
+        fab_state["task"] = asyncio.create_task(auto_collapse())
+
+    async def collapse_fab():
+        if not fab_state["expanded"]: return
+        fab_state["expanded"] = False
+        fab_inner.width = 24
+        fab_icon.name = ft.Icons.CHEVRON_LEFT
+        fab_icon.size = 20
+        page.update()
+
+    async def handle_fab_click(e):
+        if not fab_state["expanded"]:
+            # 如果是缩进状态，点击将其展开
+            await expand_fab()
+        else:
+            # 如果是展开状态，点击立即缩回并执行重登
+            await collapse_fab()
+            await relogin_click(e)
+
+    async def handle_pan_update(e: ft.DragUpdateEvent):
+        # 兼容旧版本和新版本 Flet 的 delta 解析
+        try:
+            dx = e.local_delta.x
+        except AttributeError:
+            dx = getattr(e, "delta_x", 0)
+            
+        # 往左滑 (dx 为负值) 触发展开，往右滑 (dx 为正值) 触发收回
+        if dx < -2 and not fab_state["expanded"]:
+            await expand_fab()
+        elif dx > 2 and fab_state["expanded"]:
+            await collapse_fab()
+
+    fab_icon = ft.Icon(ft.Icons.CHEVRON_LEFT, color=ft.Colors.WHITE, size=20)
+
+    # 【这里已经完全去除了旧版的 ft.animation.Animation，使用最新版 ft.Animation】
+    # 【并且使用字符串 "decelerate" 彻底规避枚举可能存在的所有改名问题】
+    fab_inner = ft.Container(
+        content=fab_icon,
+        alignment=ft.Alignment(0, 0),
+        width=24,  # 默认缩起状态宽度
+        height=48, # 按钮高度
         bgcolor=ft.Colors.BLUE_700,
-        on_click=relogin_click,
-        mini=True  # 启用 mini 模式，缩小按钮尺寸
+        border_radius=ft.BorderRadius(top_left=24, top_right=0, bottom_left=24, bottom_right=0),
+        animate=ft.Animation(250, "decelerate"), # <--- 修复点，彻底放弃废弃的子模块路径
+        on_click=handle_fab_click,
     )
 
-    # 悬浮按钮容器，利用 right 和 top 固定右上角
+    fab_gesture = ft.GestureDetector(
+        on_pan_update=handle_pan_update,
+        content=fab_inner
+    )
+
     fab_container = ft.Container(
-        content=relogin_fab,
-        right=18,  # 距离右侧屏幕边缘 18 像素
-        top=18,    # 距离顶部 18 像素 
+        content=fab_gesture,
+        right=0,  # 0像素紧贴屏幕右侧边缘
+        top=18,   # 维持与卡片标题基本平齐的高度
         visible=False 
     )
 

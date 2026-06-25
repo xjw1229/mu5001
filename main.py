@@ -388,7 +388,7 @@ async def main(page: ft.Page):
 
             txt_temp_bat.value = f"电池温度: {res.get('battery_temp', '--')}℃"
             txt_temp_mdm.value = f"4G Modem: {res.get('pm_sensor_mdm', '--')}℃"
-            txt_temp_pa  = f"PA: {res.get('pm_sensor_pa1', '--')}℃"
+            txt_temp_pa.value = f"PA: {res.get('pm_sensor_pa1', '--')}℃"
 
             try:
                 s = app_state["session"]

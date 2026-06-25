@@ -2,10 +2,18 @@ name: Build Android APK
 
 on:
   push:
+    branches: 
+      - main  # 💡 优化 1：建议只在推送到主分支时触发（可根据你的实际分支名调整）
     paths-ignore:
       - 'README.md'
       - 'read.me'
-      - '**/*.md'  # 这一行会忽略所有文件夹下的 Markdown 文件
+      - '**/*.md'
+  workflow_dispatch: # 💡 优化 2：增加手动触发选项，方便你在不改代码时随时在网页端点击打包
+
+# 💡 优化 3：并发控制。如果你连续提交两次，自动取消前一次的构建，节省 Action 时长
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -18,26 +26,37 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'  # 💡 优化 4：开启自带的 pip 缓存，后续流水线秒装依赖
           
       - name: 配置 Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-          
-      # 已经删除Flutter，由 Flet下载正确的版本
-          
+
+      # 💡 优化 5：缓存 Flet 下载的 Flutter SDK 和 Gradle 构建文件
+      # 极大提升二次构建速度，并且缓存生效后可以避免 Flet 重复弹终端提示
+      - name: 缓存 Flet SDK 与 Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.flet
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-flet-gradle-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-flet-gradle-
+            
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           
       - name: 构建安卓 APK
-        # 💡 在前面加上 yes | ，自动回答 [y/n] 的终端提问，防止流水线卡死报错
         run: yes | flet build apk --org com.zte --project mu5001
         
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: ZTEManager_App
+          name: MU5001_App
           path: build/apk/*.apk

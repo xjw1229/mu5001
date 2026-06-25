@@ -860,12 +860,20 @@ async def main(page: ft.Page):
     rb_buffer = ft.TextField(label="缓冲时间", expand=1, value="02", color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, hint_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR)
     row_time = ft.Row([rb_time_hr, ft.Text(":", size=20, weight=ft.FontWeight.BOLD, color=TEXT_MAIN), rb_time_min, rb_buffer], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
+    # === 单选逻辑 ===
+    def on_week_cb_change(e):
+        for cb in week_cbs:
+            # 只要是当前被点击的框，强制打勾；其他的强制取消
+            cb.value = (cb == e.control)
+        page.update()
+
     week_days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     week_cbs = [
         ft.Checkbox(
             label=w, 
             value=False, 
             data=str(i+1), 
+            on_change=on_week_cb_change,  # <-- 绑定上面的单选事件
             label_style=ft.TextStyle(color=TEXT_MAIN), 
             fill_color={"selected": ACCENT_COLOR, "": BG_COLOR},
             check_color=BG_COLOR

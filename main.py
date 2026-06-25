@@ -133,7 +133,6 @@ async def main(page: ft.Page):
                 "hovered": BTN_HOVER_BG,       # 鼠标悬浮变色
                 "": bgcolor                    # 默认常显颜色
             },
-            # overlay_color={"": ft.Colors.TRANSPARENT}    #恢复系统原生点击遮罩和波纹
             elevation={"": 0}                  # 保持扁平化设计，不要阴影
         )
 

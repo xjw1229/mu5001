@@ -69,7 +69,6 @@ async def main(page: ft.Page):
   
     BTN_BG = "#535773"           # 按键常显色：比卡片稍亮，实现常显凸起感
     BTN_HOVER_BG = "#6A6F91"     # 按键悬浮色：比常显稍亮，提供滑过反馈
-    BTN_PRESSED_BG = "#82A5E0"    # 按键点击瞬间颜色：默认使用淡蓝保持全局统一
     
     FAB_BG = "#82A5E0"           # 悬浮按钮背景色：淡蓝
     FAB_ICON = "#FFFFFF"         # 悬浮按钮图标色：纯白
@@ -132,7 +131,6 @@ async def main(page: ft.Page):
             color=color,
             bgcolor={
                 "hovered": BTN_HOVER_BG,       # 调用全局悬浮色
-                "pressed": BTN_PRESSED_BG,     # 调用全局按下色
                 "": bgcolor                    # 默认常显颜色
             },
             overlay_color={
@@ -886,8 +884,9 @@ async def main(page: ft.Page):
 
     rb_interval = ft.Dropdown(
         label="间隔天数", 
-        options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], 
-        value="1",
+        options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], #最大设置30天
+        value="1", 
+        menu_height=300, #限制选择项长度
         color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR
     )
     

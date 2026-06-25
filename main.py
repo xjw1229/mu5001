@@ -131,15 +131,12 @@ async def main(page: ft.Page):
             color=color,
             bgcolor={
                 "hovered": BTN_HOVER_BG,       # 鼠标悬浮变色
-                "pressed": BTN_HOVER_BG,       # 手机端手指按下变色
                 "": bgcolor                    # 默认常显颜色
             },
-            overlay_color={
-                "": ft.Colors.TRANSPARENT      # 禁用系统自带遮罩
-            },
-            elevation={"": 0}
+            # overlay_color={"": ft.Colors.TRANSPARENT}    #恢复系统原生点击遮罩和波纹
+            elevation={"": 0}                  # 保持扁平化设计，不要阴影
         )
-        # 兼容最新版和旧版，不报废弃警告
+
         BtnClass = getattr(ft, "Button", ft.ElevatedButton) 
         btn = BtnClass(text, on_click=on_click, height=height, icon=icon, style=btn_style)
         btn.expand = expand

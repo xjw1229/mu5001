@@ -54,12 +54,37 @@ def mask_to_lte_bands(mask_str):
 # 主程序 (异步)
 # ==========================================
 async def main(page: ft.Page):
-    page.title = "MU5001"
-    # 取消全局边距，为 Stack 悬浮定位让路
-    page.padding = 0
-    page.theme_mode = ft.ThemeMode.LIGHT
+    # ==========================================
+    # 全局配色变量
+    # ==========================================
+    BG_COLOR = "#171920"         # 底层颜色：用作页面背景、未勾选框底色、功能开关底色
+    CARD_BG = "#40425C"          # 容器卡片底色
+    INPUT_BG = "#36394F"         # 输入框/下拉菜单底色
+    
+    TEXT_MAIN = "#FFFFFF"        # 主文字、按键文字：纯白
+    TEXT_SEC = "#A1A4B0"         # 辅助说明小字、边框：浅灰
+    ACCENT_COLOR = "#82A5E0"     # 可点击交互、滑轨激活色、勾选框选中色：淡蓝
+    ERROR_COLOR = "#E08282"      # 警告/错误：柔和红
+    DIVIDER_COLOR = "#2A2C3E"    # 分割线色
+  
+    BTN_BG = "#535773"           # 按键常显色：比卡片稍亮，实现常显凸起感
+    BTN_HOVER_BG = "#6A6F91"     # 按键悬浮色：比常显稍亮，提供滑过反馈
+    BTN_PRESSED_BG = "#82A5E0"    # 按键点击瞬间颜色：默认使用淡蓝保持全局统一
+    
+    FAB_BG = "#82A5E0"           # 悬浮按钮背景色：淡蓝
+    FAB_ICON = "#FFFFFF"         # 悬浮按钮图标色：纯白
+    
+    TOAST_SUCCESS_BG = "#2D4A3E" # 成功提示背景色：暗绿
+    TOAST_ERROR_BG = "#5C2D2D"   # 错误/警告提示背景色：暗红
 
-    # 启用 Flet 0.80.0+ 官方最新的本地持久化存储服务
+    # 设置全局字体：思源黑体
+    page.theme = ft.Theme(font_family="Source Han Sans SC, Noto Sans SC, Microsoft YaHei, sans-serif")
+    page.title = "MU5001"
+    page.padding = 0
+    page.theme_mode = ft.ThemeMode.DARK
+    page.bgcolor = BG_COLOR
+
+    # 启用 Flet 持久化存储服务
     prefs = ft.SharedPreferences()
 
     app_state = {
@@ -98,6 +123,29 @@ async def main(page: ft.Page):
     net_mode_checkboxes = {}
     LABEL_W = 75 
 
+    # ==========================================
+    # 统一样式构建函数
+    # ==========================================
+   
+    def create_button(text, on_click, height=None, color=TEXT_MAIN, bgcolor=BTN_BG, icon=None, expand=False):
+        btn_style = ft.ButtonStyle(
+            color=color,
+            bgcolor={
+                "hovered": BTN_HOVER_BG,       # 调用全局悬浮色
+                "pressed": BTN_PRESSED_BG,     # 调用全局按下色
+                "": bgcolor                    # 默认常显颜色
+            },
+            overlay_color={
+                "": ft.Colors.TRANSPARENT      # 禁用系统自带遮罩
+            },
+            elevation={"": 0}
+        )
+        # 兼容最新版和旧版，不报废弃警告
+        BtnClass = getattr(ft, "Button", ft.ElevatedButton) 
+        btn = BtnClass(text, on_click=on_click, height=height, icon=icon, style=btn_style)
+        btn.expand = expand
+        return btn
+
     def create_checkbox_grid(bands_list, prefix, selected_set, checkboxes_dict, on_change_handler):
         controls = []
         for b in bands_list:
@@ -106,6 +154,9 @@ async def main(page: ft.Page):
                 value=(b in selected_set),
                 data=b,
                 on_change=on_change_handler,
+                label_style=ft.TextStyle(color=TEXT_MAIN),
+                fill_color={"selected": ACCENT_COLOR, "": BG_COLOR}, # 选中淡蓝，未选中底层黑
+                check_color=BG_COLOR # 对勾颜色为底层黑，清晰度极高
             )
             checkboxes_dict[b] = cb
             controls.append(ft.Container(content=cb, width=72, padding=0, margin=0))
@@ -136,10 +187,10 @@ async def main(page: ft.Page):
         page.update()
 
     def show_toast(msg, is_success=True):
-        bg_color = ft.Colors.GREEN_700 if is_success else ft.Colors.RED_700
+        bg_color = TOAST_SUCCESS_BG if is_success else TOAST_ERROR_BG
         icon = "✅ " if is_success else "❌ "
         snack = ft.SnackBar(
-            content=ft.Text(f"{icon}{msg}", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+            content=ft.Text(f"{icon}{msg}", color=TEXT_MAIN, weight=ft.FontWeight.BOLD),
             bgcolor=bg_color,
             duration=5000,
             behavior=ft.SnackBarBehavior.FLOATING
@@ -176,6 +227,7 @@ async def main(page: ft.Page):
     def refresh_data(e=None):
         if not app_state["session"]: return
         status_text.value = "正在读取设备信息..."
+        status_text.color = TEXT_MAIN
         page.update()
         try:
             cmd = "sysIdleTimeToSleep,lte_band_lock,nr5g_sa_band_lock,nr5g_nsa_band_lock,nr5g_cell_lock,reboot_schedule_enable,reboot_schedule_mode,reboot_hour1,reboot_min1,reboot_timeframe_hours1,reboot_dow,reboot_dod"
@@ -261,13 +313,13 @@ async def main(page: ft.Page):
                 pass
 
             status_text.value = "✅ 数据读取成功" + (" | 开发者已解锁" if app_state["dev_unlocked"] else " | ⚠️ 开发者未解锁")
-            status_text.color = ft.Colors.GREEN if app_state["dev_unlocked"] else ft.Colors.ORANGE
+            status_text.color = ACCENT_COLOR if app_state["dev_unlocked"] else ERROR_COLOR
             
             fetch_realtime_stats()
             if e: show_toast("数据刷新成功，请确保已登录", True)
         except Exception:
             status_text.value = "⚠️ 读取失败，请检查连接"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             if e: show_toast("数据读取失败，请检查连接", False)
             page.update()
 
@@ -341,7 +393,7 @@ async def main(page: ft.Page):
 
             txt_temp_bat.value = f"电池温度: {res.get('battery_temp', '--')}℃"
             txt_temp_mdm.value = f"4G Modem: {res.get('pm_sensor_mdm', '--')}℃"
-            txt_temp_pa.value  = f"PA: {res.get('pm_sensor_pa1', '--')}℃"
+            txt_temp_pa  = f"PA: {res.get('pm_sensor_pa1', '--')}℃"
 
             try:
                 s = app_state["session"]
@@ -379,22 +431,22 @@ async def main(page: ft.Page):
         show_toast("正在发送重启指令...", True)
         if execute_post("REBOOT_DEVICE", {}):
             status_text.value = "✅ 重启指令已发送，设备即将重启"
-            status_text.color = ft.Colors.RED
+            status_text.color = ACCENT_COLOR
             show_toast("设备即将重启", True)
         else:
             status_text.value = "❌ 重启失败"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("设备重启失败", False)
         page.update()
 
     def wifi_sleep_click(e):
         if execute_post("SET_WIFI_SLEEP_INFO", {"sysIdleTimeToSleep": wifi_sleep.value}):
             status_text.value = "✅ WiFi休眠设置已保存"
-            status_text.color = ft.Colors.GREEN
+            status_text.color = ACCENT_COLOR
             show_toast("WiFi休眠设置保存成功", True)
         else:
             status_text.value = "❌ 保存失败"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("WiFi休眠设置保存失败", False)
         page.update()
 
@@ -416,11 +468,11 @@ async def main(page: ft.Page):
         
         if ok_set and ok_connect:
             status_text.value = "✅ 网络模式切换成功 (请等待5秒后刷新状态)"
-            status_text.color = ft.Colors.GREEN
+            status_text.color = ACCENT_COLOR
             show_toast("网络切换成功，再次切换需等待5秒", True)
         else:
             status_text.value = "❌ 设置失败 (配置未生效或操作期间被挤下线)"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("网络切换失败 (可能被挤下线)", False)
         page.update()
 
@@ -432,11 +484,11 @@ async def main(page: ft.Page):
         ok = execute_post("BAND_SELECT", {"is_gw_band": "0", "gw_band_mask": "0", "is_lte_band": "1", "lte_band_mask": lte_bands_to_mask(list(lte_selected))})
         if ok:
             status_text.value = "✅ 4G频段设置完成"
-            status_text.color = ft.Colors.GREEN
+            status_text.color = ACCENT_COLOR
             show_toast("4G频段设置成功", True)
         else:
             status_text.value = "❌ 设置失败，确认开发者权限已解锁"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("4G频段设置失败，请确认开发者权限", False)
         page.update()
 
@@ -448,11 +500,11 @@ async def main(page: ft.Page):
         ok = execute_post("WAN_PERFORM_NR5G_SANSA_BAND_LOCK", {"nr5g_band_mask": ",".join(sorted(nr_sa_selected, key=int)), "type": "0"})
         if ok:
             status_text.value = "✅ 5G SA频段设置完成"
-            status_text.color = ft.Colors.GREEN
+            status_text.color = ACCENT_COLOR
             show_toast("5G SA频段设置成功", True)
         else:
             status_text.value = "❌ 设置失败，确认开发者权限已解锁"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("5G SA频段设置失败，请确认开发者权限", False)
         page.update()
 
@@ -464,11 +516,11 @@ async def main(page: ft.Page):
         ok = execute_post("WAN_PERFORM_NR5G_SANSA_BAND_LOCK", {"nr5g_band_mask": ",".join(sorted(nr_nsa_selected, key=int)), "type": "1"})
         if ok:
             status_text.value = "✅ 5G NSA频段设置完成"
-            status_text.color = ft.Colors.GREEN
+            status_text.color = ACCENT_COLOR
             show_toast("5G NSA频段设置成功", True)
         else:
             status_text.value = "❌ 设置失败，确认开发者权限已解锁"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("5G NSA频段设置失败，请确认开发者权限", False)
         page.update()
 
@@ -481,11 +533,11 @@ async def main(page: ft.Page):
         ok = execute_post("NR5G_LOCK_CELL_SET", {"nr5g_cell_lock": lock_val})
         if ok:
             status_text.value = "✅ 锁小区配置下发完成"
-            status_text.color = ft.Colors.GREEN
+            status_text.color = ACCENT_COLOR
             show_toast("锁小区成功", True)
         else:
             status_text.value = "❌ 锁小区失败，确认开发者权限已解锁"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("锁小区失败，请确认开发者权限", False)
         page.update()
 
@@ -496,11 +548,11 @@ async def main(page: ft.Page):
             cell_band.value = "1"
             cell_scs.value = "15"
             status_text.value = "✅ 小区锁定已解除"
-            status_text.color = ft.Colors.GREEN
+            status_text.color = ACCENT_COLOR
             show_toast("小区锁定已解除", True)
         else:
             status_text.value = "❌ 解除失败，确认开发者权限已解锁"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("解除锁定失败", False)
         page.update()
 
@@ -525,11 +577,11 @@ async def main(page: ft.Page):
 
         if execute_post("FIX_TIME_REBOOT_SCHEDULE", payload):
             status_text.value = "✅ 定时重启配置已保存"
-            status_text.color = ft.Colors.GREEN
+            status_text.color = ACCENT_COLOR
             show_toast("定时重启配置保存成功，请确保已开启功能", True)
         else:
             status_text.value = "❌ 保存失败，请检查连接状态"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("定时重启配置保存失败", False)
         page.update()
 
@@ -541,13 +593,13 @@ async def main(page: ft.Page):
         pwd = pwd_input.value
         if not pwd:
             login_status.value = "⚠️ 请输入密码"
-            login_status.color = ft.Colors.RED
+            login_status.color = ERROR_COLOR
             page.update()
             return
             
         login_btn.disabled = True
         login_status.value = "正在验证登录..."
-        login_status.color = ft.Colors.GREY_700
+        login_status.color = TEXT_SEC
         page.update()
         
         await asyncio.sleep(0.01) 
@@ -610,7 +662,7 @@ async def main(page: ft.Page):
                 remember_cb.value = False
                 pwd_input.value = "" 
                 login_status.value = "❌ 密码错误或账号锁定"
-                login_status.color = ft.Colors.RED
+                login_status.color = ERROR_COLOR
                 show_toast("密码错误或账号锁定", False)
         except Exception:
             if prefs:
@@ -624,7 +676,7 @@ async def main(page: ft.Page):
                 except Exception: pass
             remember_cb.value = False
             login_status.value = "❌ 连接失败，请检查地址和网络"
-            login_status.color = ft.Colors.RED
+            login_status.color = ERROR_COLOR
             show_toast("连接失败，请检查地址和网络", False)
             
         login_btn.disabled = False
@@ -659,20 +711,20 @@ async def main(page: ft.Page):
                 app_state.update({"session": s, "rd0": rd0, "rd1": rd1})
                 if unlock_developer():
                     status_text.value = "✅ 重登成功并已解锁开发者权限"
-                    status_text.color = ft.Colors.GREEN
+                    status_text.color = ACCENT_COLOR
                     show_toast("重登成功，开发者解锁成功", True)
                 else:
                     status_text.value = "⚠️ 重登成功，开发者解锁失败"
-                    status_text.color = ft.Colors.ORANGE
+                    status_text.color = ERROR_COLOR
                     show_toast("重登成功，开发者解锁失败", False)
                 refresh_data()
             else:
                 status_text.value = "❌ 重新登录失败，可能密码已修改或被锁定"
-                status_text.color = ft.Colors.RED
+                status_text.color = ERROR_COLOR
                 show_toast("重登失败", False)
         except Exception:
             status_text.value = "❌ 重登连接失败，请检查网络"
-            status_text.color = ft.Colors.RED
+            status_text.color = ERROR_COLOR
             show_toast("连接失败，请检查网络", False)
             
         page.update()
@@ -680,7 +732,9 @@ async def main(page: ft.Page):
     # ==============================================
     # UI 控件构建
     # ==============================================
-    title = ft.Text("MU5001", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_700, text_align=ft.TextAlign.CENTER)
+    sec_style = ft.TextStyle(color=TEXT_SEC)
+
+    title = ft.Text("MU5001", size=32, weight=ft.FontWeight.BOLD, color=TEXT_MAIN, text_align=ft.TextAlign.CENTER)
     
     saved_ip = ""
     saved_pwd = ""
@@ -693,12 +747,20 @@ async def main(page: ft.Page):
             saved_pwd = await prefs.get("saved_pwd")
     except Exception: pass
     
-    ip_input = ft.TextField(label="管理地址", value=saved_ip if saved_ip else "http://192.168.0.1")
-    pwd_input = ft.TextField(label="管理员密码", password=True, can_reveal_password=True, value=saved_pwd if saved_pwd else "")
-    remember_cb = ft.Checkbox(label="记住密码并自动登录", value=bool(saved_pwd)) 
+    ip_input = ft.TextField(label="管理地址", value=saved_ip if saved_ip else "http://192.168.0.1", color=TEXT_MAIN, bgcolor=INPUT_BG, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR, label_style=sec_style, hint_style=sec_style)
+    pwd_input = ft.TextField(label="管理员密码", password=True, can_reveal_password=True, value=saved_pwd if saved_pwd else "", color=TEXT_MAIN, bgcolor=INPUT_BG, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR, label_style=sec_style, hint_style=sec_style)
     
-    login_status = ft.Text("输入账号密码登录", color=ft.Colors.GREY_500, text_align=ft.TextAlign.CENTER)
-    login_btn = ft.Button("一键登录", on_click=login_click, height=45)
+    remember_cb = ft.Checkbox(
+        label="记住密码并自动登录", 
+        value=bool(saved_pwd), 
+        label_style=ft.TextStyle(color=TEXT_SEC), 
+        fill_color={"selected": ACCENT_COLOR, "": BG_COLOR},
+        check_color=BG_COLOR
+    ) 
+    
+    login_status = ft.Text("输入账号密码登录", color=TEXT_SEC, text_align=ft.TextAlign.CENTER)
+    
+    login_btn = create_button("一键登录", on_click=login_click, height=45)
     
     login_view = ft.Container(
         padding=15,
@@ -723,19 +785,19 @@ async def main(page: ft.Page):
     def build_status_row(icon, text_control):
         text_control.expand = True
         return ft.Row([
-            ft.Text(icon, size=16, width=28, text_align=ft.TextAlign.CENTER),
+            ft.Text(icon, size=16, width=28, text_align=ft.TextAlign.CENTER, color=ACCENT_COLOR),
             text_control
         ], spacing=5, vertical_alignment=ft.CrossAxisAlignment.START)
 
-    txt_battery = ft.Text("电量: --", size=14)
-    txt_network = ft.Text("网络: --", size=14)
-    txt_wan_ip  = ft.Text("WAN IP: --", size=14)
-    txt_users   = ft.Text("接入设备: --", size=14)
+    txt_battery = ft.Text("电量: --", size=14, color=TEXT_MAIN)
+    txt_network = ft.Text("网络: --", size=14, color=TEXT_MAIN)
+    txt_wan_ip  = ft.Text("WAN IP: --", size=14, color=TEXT_MAIN)
+    txt_users   = ft.Text("接入设备: --", size=14, color=TEXT_MAIN)
 
-    txt_tx_speed = ft.Text("上传速度: --", size=14)
-    txt_rx_speed = ft.Text("下载速度: --", size=14)
-    txt_traffic_rt = ft.Text("本次流量: --", size=14)
-    txt_traffic_mo = ft.Text("当月流量: --", size=14)
+    txt_tx_speed = ft.Text("上传速度: --", size=14, color=TEXT_MAIN)
+    txt_rx_speed = ft.Text("下载速度: --", size=14, color=TEXT_MAIN)
+    txt_traffic_rt = ft.Text("本次流量: --", size=14, color=TEXT_MAIN)
+    txt_traffic_mo = ft.Text("当月流量: --", size=14, color=TEXT_MAIN)
 
     col_speed = ft.Column([txt_tx_speed, txt_rx_speed], spacing=4)
     row_speed = build_status_row("🚀", col_speed)
@@ -743,14 +805,14 @@ async def main(page: ft.Page):
     col_traffic = ft.Column([txt_traffic_rt, txt_traffic_mo], spacing=4)
     row_traffic = build_status_row("📊", col_traffic)
 
-    txt_freq = ft.Text("频点: --", size=13, color=ft.Colors.GREY_800)
-    txt_pci  = ft.Text("PCI: --", size=13, color=ft.Colors.GREY_800)
-    txt_rsrp = ft.Text("信号强度: --", size=13, color=ft.Colors.GREY_800)
-    txt_sinr = ft.Text("信噪比: --", size=13, color=ft.Colors.GREY_800)
+    txt_freq = ft.Text("频点: --", size=13, color=TEXT_MAIN)
+    txt_pci  = ft.Text("PCI: --", size=13, color=TEXT_MAIN)
+    txt_rsrp = ft.Text("信号强度: --", size=13, color=TEXT_MAIN)
+    txt_sinr = ft.Text("信噪比: --", size=13, color=TEXT_MAIN)
 
-    txt_temp_bat = ft.Text("电池温度: --℃", size=13, color=ft.Colors.GREY_800)
-    txt_temp_mdm = ft.Text("4G Modem: --℃", size=13, color=ft.Colors.GREY_800)
-    txt_temp_pa  = ft.Text("PA: --℃", size=13, color=ft.Colors.GREY_800)
+    txt_temp_bat = ft.Text("电池温度: --℃", size=13, color=TEXT_MAIN)
+    txt_temp_mdm = ft.Text("4G Modem: --℃", size=13, color=TEXT_MAIN)
+    txt_temp_pa  = ft.Text("PA: --℃", size=13, color=TEXT_MAIN)
 
     row_battery = build_status_row("🔋", txt_battery)
     row_network = build_status_row("📶", txt_network)
@@ -765,38 +827,55 @@ async def main(page: ft.Page):
     temp_col_content = ft.Column([txt_temp_bat, txt_temp_mdm, txt_temp_pa], spacing=4)
     row_temps = build_status_row("🌡️", temp_col_content)
     
-    status_text = ft.Text("", color=ft.Colors.RED)
+    status_text = ft.Text("", color=TEXT_MAIN)
     
     status_card = ft.Container(
         content=ft.Column([
             row_battery, row_network, row_wan_ip, row_users, 
-            ft.Divider(height=5),
+            ft.Divider(height=5, color=DIVIDER_COLOR),
             row_speed, row_traffic,
-            ft.Divider(height=5),
+            ft.Divider(height=5, color=DIVIDER_COLOR),
             row_freq, row_pci, row_rsrp, row_sinr, 
-            ft.Divider(height=5),
+            ft.Divider(height=5, color=DIVIDER_COLOR),
             row_temps,
-            ft.Divider(height=8), status_text
+            ft.Divider(height=8, color=DIVIDER_COLOR), status_text
         ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-        padding=15, bgcolor=ft.Colors.BLUE_50, border_radius=10
+        padding=15, bgcolor=CARD_BG, border_radius=12
     )
 
-    txt_local_time = ft.Text("设备当前时间: --", size=12, color=ft.Colors.GREY_600)
-    reboot_enable = ft.Switch(label="启用定时重启功能", value=False)
+    txt_local_time = ft.Text("设备当前时间: --", size=12, color=TEXT_SEC)
+    
+    reboot_enable = ft.Switch(
+        label="启用定时重启功能", 
+        value=False, 
+        active_track_color=ACCENT_COLOR, 
+        inactive_track_color=BG_COLOR, 
+        thumb_color=TEXT_MAIN
+    )
     
     reboot_mode = ft.Dropdown(
         label="重启模式 (选择后请填写下方对应的配置)",
         options=[ft.dropdown.Option("1", "1 - 按周自动重启"), ft.dropdown.Option("2", "2 - 按间隔天数")],
-        value="1"
+        value="1",
+        color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR
     )
 
-    rb_time_hr = ft.TextField(label="时", expand=1, value="02")
-    rb_time_min = ft.TextField(label="分", expand=1, value="00")
-    rb_buffer = ft.TextField(label="缓冲时间", expand=1, value="02")
-    row_time = ft.Row([rb_time_hr, ft.Text(":", size=20, weight=ft.FontWeight.BOLD), rb_time_min, rb_buffer], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    rb_time_hr = ft.TextField(label="时", expand=1, value="02", color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, hint_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR)
+    rb_time_min = ft.TextField(label="分", expand=1, value="00", color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, hint_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR)
+    rb_buffer = ft.TextField(label="缓冲时间", expand=1, value="02", color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, hint_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR)
+    row_time = ft.Row([rb_time_hr, ft.Text(":", size=20, weight=ft.FontWeight.BOLD, color=TEXT_MAIN), rb_time_min, rb_buffer], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     week_days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    week_cbs = [ft.Checkbox(label=w, value=False, data=str(i+1)) for i, w in enumerate(week_days)]
+    week_cbs = [
+        ft.Checkbox(
+            label=w, 
+            value=False, 
+            data=str(i+1), 
+            label_style=ft.TextStyle(color=TEXT_MAIN), 
+            fill_color={"selected": ACCENT_COLOR, "": BG_COLOR},
+            check_color=BG_COLOR
+        ) for i, w in enumerate(week_days)
+    ]
     
     row_weeks = ft.ResponsiveRow(
         controls=[
@@ -805,114 +884,142 @@ async def main(page: ft.Page):
         run_spacing=0, spacing=0
     )
 
-    rb_interval = ft.Dropdown(label="间隔天数", options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], value="1")
-    btn_save_reboot = ft.Button("保存重启规则", on_click=save_schedule_reboot)
+    rb_interval = ft.Dropdown(
+        label="间隔天数", 
+        options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], 
+        value="1",
+        color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR
+    )
+    
+    btn_save_reboot = create_button("保存重启规则", on_click=save_schedule_reboot)
 
     reboot_card = ft.Container(
         content=ft.Column([
-            ft.Text("⏱️ 定时重启规则", size=18, weight=ft.FontWeight.BOLD),
+            ft.Text("⏱️ 定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
             txt_local_time,
-            ft.Divider(height=5),
+            ft.Divider(height=5, color=DIVIDER_COLOR),
             reboot_enable,
             row_time,
             reboot_mode,
-            ft.Divider(height=5),
-            ft.Text("🔹 选项1: 按周触发 (仅在重启模式选 1 时生效)", size=13, color=ft.Colors.BLUE_700, weight=ft.FontWeight.BOLD),
+            ft.Divider(height=5, color=DIVIDER_COLOR),
+            ft.Text("🔹 选项1: 按周触发 (仅在重启模式选 1 时生效)", size=13, color=TEXT_SEC, weight=ft.FontWeight.BOLD),
             row_weeks,
             ft.Container(height=5),
-            ft.Text("🔹 选项2: 间隔触发 (仅在重启模式选 2 时生效)", size=13, color=ft.Colors.ORANGE_700, weight=ft.FontWeight.BOLD),
+            ft.Text("🔹 选项2: 间隔触发 (仅在重启模式选 2 时生效)", size=13, color=TEXT_SEC, weight=ft.FontWeight.BOLD),
             rb_interval,
             ft.Container(height=10),
             btn_save_reboot
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-        padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10
+        padding=15, bgcolor=CARD_BG, border_radius=12
     )
 
-    wifi_sleep = ft.Dropdown(label="WiFi空闲休眠", options=[
-        ft.dropdown.Option("0", "永不休眠"), ft.dropdown.Option("5", "5分钟"),
-        ft.dropdown.Option("10", "10分钟"), ft.dropdown.Option("20", "20分钟"),
-        ft.dropdown.Option("30", "30分钟"), ft.dropdown.Option("60", "1小时"),
-        ft.dropdown.Option("120", "2小时"),
-    ], value="10")
-    btn_wifi_sleep = ft.Button("保存休眠设置", on_click=wifi_sleep_click)
+    wifi_sleep = ft.Dropdown(
+        label="WiFi空闲休眠", 
+        options=[
+            ft.dropdown.Option("0", "永不休眠"), ft.dropdown.Option("5", "5分钟"),
+            ft.dropdown.Option("10", "10分钟"), ft.dropdown.Option("20", "20分钟"),
+            ft.dropdown.Option("30", "30分钟"), ft.dropdown.Option("60", "1小时"),
+            ft.dropdown.Option("120", "2小时"),
+        ], 
+        value="10",
+        color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR
+    )
+    btn_wifi_sleep = create_button("保存休眠设置", on_click=wifi_sleep_click)
 
     net_mode_controls = []
     for name in NET_CONFIG.keys():
-        cb = ft.Checkbox(label=name, value=(name == "5G/4G/3G"), on_change=net_mode_change)
+        cb = ft.Checkbox(
+            label=name, 
+            value=(name == "5G/4G/3G"), 
+            on_change=net_mode_change, 
+            label_style=ft.TextStyle(color=TEXT_MAIN), 
+            fill_color={"selected": ACCENT_COLOR, "": BG_COLOR},
+            check_color=BG_COLOR
+        )
         net_mode_checkboxes[name] = cb
         net_mode_controls.append(ft.Container(content=cb, col={"xs": 6, "sm": 4, "md": 3}, padding=0, margin=0))
 
     net_mode_grid = ft.ResponsiveRow(net_mode_controls, run_spacing=0, spacing=0)
-    btn_net_mode_apply = ft.Button("应用网络锁定", on_click=apply_net_mode)
+    btn_net_mode_apply = create_button("应用网络锁定", on_click=apply_net_mode)
 
     lte_grid = create_checkbox_grid(LTE_BANDS, "B", lte_selected, lte_checkboxes, lte_checkbox_change)
     sa_grid = create_checkbox_grid(NR_SA_BANDS, "N", nr_sa_selected, sa_checkboxes, sa_checkbox_change)
     nsa_grid = create_checkbox_grid(NR_NSA_BANDS, "N", nr_nsa_selected, nsa_checkboxes, nsa_checkbox_change)
 
-    btn_lte_apply = ft.Button("应用 4G 锁频段", on_click=lte_band_apply)
-    btn_sa_apply = ft.Button("应用 5G SA 锁频段", on_click=nr_sa_apply)
-    btn_nsa_apply = ft.Button("应用 5G NSA 锁频段", on_click=nr_nsa_apply)
+    btn_lte_apply = create_button("应用 4G 锁频段", on_click=lte_band_apply)
+    btn_sa_apply = create_button("应用 5G SA 锁频段", on_click=nr_sa_apply)
+    btn_nsa_apply = create_button("应用 5G NSA 锁频段", on_click=nr_nsa_apply)
 
-    cell_pci = ft.TextField(expand=True)
-    row_pci = ft.Row([ft.Row([ft.Text("PCI"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W), cell_pci], spacing=10)
+    cell_pci = ft.TextField(expand=True, color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, hint_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR)
+    row_pci = ft.Row([ft.Row([ft.Text("PCI", color=TEXT_MAIN), ft.Text("*", color=ACCENT_COLOR)], spacing=2, width=LABEL_W), cell_pci], spacing=10)
 
-    cell_earfcn = ft.TextField(expand=True)
-    row_earfcn = ft.Row([ft.Row([ft.Text("EARFCN"), ft.Text("*", color=ft.Colors.RED)], spacing=2, width=LABEL_W), cell_earfcn], spacing=10)
+    cell_earfcn = ft.TextField(expand=True, color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, hint_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR)
+    row_earfcn = ft.Row([ft.Row([ft.Text("EARFCN", color=TEXT_MAIN), ft.Text("*", color=ACCENT_COLOR)], spacing=2, width=LABEL_W), cell_earfcn], spacing=10)
 
-    cell_band = ft.Dropdown(expand=True, options=[
-        ft.dropdown.Option("1", "频段 1"), ft.dropdown.Option("3", "频段 3"),
-        ft.dropdown.Option("28", "频段 28"), ft.dropdown.Option("41", "频段 41"),
-        ft.dropdown.Option("78", "频段 78"),
-    ], value="1")
-    row_band = ft.Row([ft.Text("BAND", width=LABEL_W), cell_band], spacing=10)
+    cell_band = ft.Dropdown(
+        expand=True, 
+        options=[
+            ft.dropdown.Option("1", "频段 1"), ft.dropdown.Option("3", "频段 3"),
+            ft.dropdown.Option("28", "频段 28"), ft.dropdown.Option("41", "频段 41"),
+            ft.dropdown.Option("78", "频段 78"),
+        ], 
+        value="1",
+        color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR
+    )
+    row_band = ft.Row([ft.Text("BAND", width=LABEL_W, color=TEXT_MAIN), cell_band], spacing=10)
 
-    cell_scs = ft.Dropdown(expand=True, options=[
-        ft.dropdown.Option("15", "15KHz"), ft.dropdown.Option("30", "30KHz"), ft.dropdown.Option("60", "60KHz"),
-    ], value="15")
-    row_scs = ft.Row([ft.Text("SCS", width=LABEL_W), cell_scs], spacing=10)
+    cell_scs = ft.Dropdown(
+        expand=True, 
+        options=[
+            ft.dropdown.Option("15", "15KHz"), ft.dropdown.Option("30", "30KHz"), ft.dropdown.Option("60", "60KHz"),
+        ], 
+        value="15",
+        color=TEXT_MAIN, bgcolor=INPUT_BG, label_style=sec_style, border_color=TEXT_SEC, focused_border_color=ACCENT_COLOR
+    )
+    row_scs = ft.Row([ft.Text("SCS", width=LABEL_W, color=TEXT_MAIN), cell_scs], spacing=10)
 
-    cell_tip = ft.Text("设备重启后生效", size=13, color=ft.Colors.GREY_700, text_align=ft.TextAlign.CENTER)
+    cell_tip = ft.Text("设备重启后生效", size=13, color=TEXT_SEC, text_align=ft.TextAlign.CENTER)
     
-    btn_cell_apply = ft.Button("应用锁小区", on_click=cell_lock_apply, height=45)
-    btn_cell_unlock = ft.Button("清除锁定", on_click=cell_unlock_click, height=45, color=ft.Colors.RED, expand=True)
-    btn_cell_reboot = ft.Button("重启设备", on_click=reboot_click, height=45, color=ft.Colors.RED, expand=True)
+    btn_cell_apply = create_button("应用锁小区", on_click=cell_lock_apply, height=45)
+    btn_cell_unlock = create_button("清除锁定", on_click=cell_unlock_click, height=45, expand=True)
+    btn_cell_reboot = create_button("重启设备", on_click=reboot_click, height=45, expand=True)
 
-    btn_refresh = ft.Button("刷新数据", icon=ft.Icons.REFRESH, on_click=refresh_data, expand=True)
-    btn_reboot_top = ft.Button("重启设备", icon=ft.Icons.POWER_SETTINGS_NEW, color=ft.Colors.RED, on_click=reboot_click, expand=True)
+    btn_refresh = create_button("刷新数据", on_click=refresh_data, icon=ft.Icons.REFRESH, expand=True)
+    btn_reboot_top = create_button("重启设备", on_click=reboot_click, icon=ft.Icons.POWER_SETTINGS_NEW, expand=True)
 
     setting_card = ft.Container(
         content=ft.Column([
-            ft.Text("⚙️ 高级网络设置", size=18, weight=ft.FontWeight.BOLD),
-            ft.Divider(height=10),
-            ft.Text("📶 WiFi省电休眠", weight=ft.FontWeight.BOLD),
+            ft.Text("⚙️ 高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
+            ft.Divider(height=10, color=DIVIDER_COLOR),
+            ft.Text("📶 WiFi省电休眠", weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
             wifi_sleep, btn_wifi_sleep,
             ft.Container(height=15),
 
-            ft.Text("🌐 网络模式锁定", weight=ft.FontWeight.BOLD),
+            ft.Text("🌐 网络模式锁定", weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
             net_mode_grid, 
             btn_net_mode_apply,
             ft.Container(height=15),
 
             ft.Row([
-                ft.Text("📡 网络频段锁定", weight=ft.FontWeight.BOLD),
-                ft.Text("(每项至少保留一个频段)", size=12, color=ft.Colors.GREY_600)
+                ft.Text("📡 网络频段锁定", weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
+                ft.Text("(每项至少保留一个频段)", size=12, color=TEXT_SEC)
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Divider(height=5),
+            ft.Divider(height=5, color=DIVIDER_COLOR),
 
-            ft.Text("🔹 4G LTE 频段", size=13, weight=ft.FontWeight.W_500),
+            ft.Text("🔹 4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=TEXT_MAIN),
             lte_grid, btn_lte_apply,
             ft.Container(height=10),
 
-            ft.Text("🔹 5G SA 频段", size=13, weight=ft.FontWeight.W_500),
+            ft.Text("🔹 5G SA 频段", size=13, weight=ft.FontWeight.W_500, color=TEXT_MAIN),
             sa_grid, btn_sa_apply,
             ft.Container(height=10),
 
-            ft.Text("🔹 5G NSA 频段", size=13, weight=ft.FontWeight.W_500),
+            ft.Text("🔹 5G NSA 频段", size=13, weight=ft.FontWeight.W_500, color=TEXT_MAIN),
             nsa_grid, btn_nsa_apply,
             ft.Container(height=10),
 
-            ft.Text("🔹 5G 锁定小区", size=14, weight=ft.FontWeight.BOLD),
-            ft.Divider(height=5),
+            ft.Text("🔹 5G 锁定小区", size=14, weight=ft.FontWeight.BOLD, color=TEXT_MAIN),
+            ft.Divider(height=5, color=DIVIDER_COLOR),
             row_pci,
             row_earfcn,
             row_band,
@@ -921,12 +1028,12 @@ async def main(page: ft.Page):
             btn_cell_apply,
             ft.Row([btn_cell_unlock, btn_cell_reboot], spacing=10),
         ], spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-        padding=15, bgcolor=ft.Colors.GREY_100, border_radius=10
+        padding=15, bgcolor=CARD_BG, border_radius=12
     )
 
     title_row = ft.Row(
         [
-            ft.Text("📊 设备状态", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, expand=True),
+            ft.Text("📊 设备状态", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, expand=True, color=TEXT_MAIN),
         ],
         alignment=ft.MainAxisAlignment.CENTER,
         vertical_alignment=ft.CrossAxisAlignment.CENTER
@@ -966,11 +1073,9 @@ async def main(page: ft.Page):
         fab_icon.size = 24
         page.update()
         
-        # 取消可能正在运行的自动缩回任务
         if fab_state["task"]:
             fab_state["task"].cancel()
         
-        # 定义一个 3 秒后的自动缩回逻辑，防呆设计
         async def auto_collapse():
             try:
                 await asyncio.sleep(3)
@@ -990,37 +1095,32 @@ async def main(page: ft.Page):
 
     async def handle_fab_click(e):
         if not fab_state["expanded"]:
-            # 如果是缩进状态，点击将其展开
             await expand_fab()
         else:
-            # 如果是展开状态，点击立即缩回并执行重登
             await collapse_fab()
             await relogin_click(e)
 
     async def handle_pan_update(e: ft.DragUpdateEvent):
-        # 兼容旧版本和新版本 Flet 的 delta 解析
         try:
             dx = e.local_delta.x
         except AttributeError:
             dx = getattr(e, "delta_x", 0)
             
-        # 往左滑 (dx 为负值) 触发展开，往右滑 (dx 为正值) 触发收回
         if dx < -2 and not fab_state["expanded"]:
             await expand_fab()
         elif dx > 2 and fab_state["expanded"]:
             await collapse_fab()
 
-    fab_icon = ft.Icon(ft.Icons.CHEVRON_LEFT, color=ft.Colors.WHITE, size=20)
+    fab_icon = ft.Icon(ft.Icons.CHEVRON_LEFT, color=FAB_ICON, size=20)
 
-    # 使用字符串 "decelerate" 彻底规避枚举可能存在的所有改名问题
     fab_inner = ft.Container(
         content=fab_icon,
         alignment=ft.Alignment(0, 0),
-        width=24,  # 默认缩起状态宽度
-        height=48, # 按钮高度
-        bgcolor=ft.Colors.BLUE_700,
+        width=24, 
+        height=48, 
+        bgcolor=FAB_BG,
         border_radius=ft.BorderRadius(top_left=24, top_right=0, bottom_left=24, bottom_right=0),
-        animate=ft.Animation(250, "decelerate"), # 彻底放弃废弃的子模块路径
+        animate=ft.Animation(250, "decelerate"),
         on_click=handle_fab_click,
     )
 
@@ -1031,8 +1131,8 @@ async def main(page: ft.Page):
 
     fab_container = ft.Container(
         content=fab_gesture,
-        right=0,  # 0像素紧贴屏幕右侧边缘
-        top=25,   # 精准对齐“设备状态”文字的上边缘
+        right=0,  
+        top=25,   
         visible=False 
     )
 

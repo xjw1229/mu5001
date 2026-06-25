@@ -130,7 +130,8 @@ async def main(page: ft.Page):
         btn_style = ft.ButtonStyle(
             color=color,
             bgcolor={
-                "hovered": BTN_HOVER_BG,       # 调用全局悬浮色
+                "hovered": BTN_HOVER_BG,       # 鼠标悬浮变色
+                "pressed": BTN_HOVER_BG,       # 手机端手指按下变色
                 "": bgcolor                    # 默认常显颜色
             },
             overlay_color={

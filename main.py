@@ -420,7 +420,7 @@ async def main(page: ft.Page):
         while True:
             await asyncio.sleep(1)
             if app_state["session"] and main_view.visible:
-                fetch_realtime_stats()
+                await asyncio.to_thread(fetch_realtime_stats)
 
     def reboot_click(e):
         show_toast("正在发送重启指令...", True)
@@ -616,20 +616,12 @@ async def main(page: ft.Page):
             if str(res.get("result", "")) in ["0", "4"]:
                 if prefs:
                     try:
-                        if remember_cb.value:
-                            if hasattr(prefs, "set_async"):
-                                await prefs.set_async("saved_ip", ip)
-                                await prefs.set_async("saved_pwd", pwd)
-                            else:
-                                await prefs.set("saved_ip", ip)
-                                await prefs.set("saved_pwd", pwd)
+                        if hasattr(prefs, "set_async"):
+                            await prefs.set_async("saved_ip", ip)
+                            await prefs.set_async("saved_pwd", pwd)
                         else:
-                            if hasattr(prefs, "remove_async"):
-                                await prefs.remove_async("saved_ip")
-                                await prefs.remove_async("saved_pwd")
-                            else:
-                                await prefs.remove("saved_ip")
-                                await prefs.remove("saved_pwd")
+                            await prefs.set("saved_ip", ip)
+                            await prefs.set("saved_pwd", pwd)
                     except Exception: pass
                     
                 app_state.update({"session": s, "ip": ip, "rd0": rd0, "rd1": rd1, "password": pwd})
@@ -642,7 +634,7 @@ async def main(page: ft.Page):
                 # 登录后显示重登按钮
                 fab_container.visible = True
                 
-                refresh_data()
+                await asyncio.to_thread(refresh_data)
                 show_toast("登录成功", True)
             else:
                 if prefs:
@@ -712,7 +704,7 @@ async def main(page: ft.Page):
                     status_text.value = "⚠️ 重登成功，开发者解锁失败"
                     status_text.color = ERROR_COLOR
                     show_toast("重登成功，开发者解锁失败", False)
-                refresh_data()
+                await asyncio.to_thread(refresh_data)
             else:
                 status_text.value = "❌ 重新登录失败，可能密码已修改或被锁定"
                 status_text.color = ERROR_COLOR
@@ -863,7 +855,7 @@ async def main(page: ft.Page):
     # === 单选逻辑 ===
     def on_week_cb_change(e):
         for cb in week_cbs:
-            # 只要是当前被点击的框，强制打勾；其他的强制取消
+    # 只要是当前被点击的框，强制打勾；其他的强制取消
             cb.value = (cb == e.control)
         page.update()
 
@@ -873,7 +865,7 @@ async def main(page: ft.Page):
             label=w, 
             value=False, 
             data=str(i+1), 
-            on_change=on_week_cb_change,  # <-- 绑定上面的单选事件
+            on_change=on_week_cb_change,  # 绑定上面的单选事件
             label_style=ft.TextStyle(color=TEXT_MAIN), 
             fill_color={"selected": ACCENT_COLOR, "": BG_COLOR},
             check_color=BG_COLOR

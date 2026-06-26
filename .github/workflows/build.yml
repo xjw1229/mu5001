@@ -1,5 +1,4 @@
 name: Build Android APK
-
 on:
   push:
     branches: 
@@ -11,14 +10,11 @@ on:
       - 'pyproject.toml'
       - 'requirements.txt'
   workflow_dispatch: 
-
 permissions:
   contents: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -54,25 +50,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 每次运行都会生成字节完全相同的 keystore，保证签名源永久一致
       - name: 还原固定签名密钥库
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.keystore
+          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.keystore
 
-      # 所有签名信息从Secrets读取，全程不变，确保每次APK签名一致
       - name: 构建带固定签名的APK
         run: |
-          yes | flet build apk \
+          flet build apk \
             --org com.zte \
             --project mu5001 \
             --build-number ${{ github.run_number }} \
             --build-version "1.0.${{ github.run_number }}" \
-            --sign-keystore release.keystore \
-            --sign-keystore-password ${{ secrets.KEYSTORE_PASSWORD }} \
-            --sign-key-alias ${{ secrets.KEY_ALIAS }} \
-            --sign-key-password ${{ secrets.KEYSTORE_PASSWORD }}
-
-          # 重命名输出文件
+            --android-signing-key-store release.keystore \
+            --android-signing-key-store-password ${{ secrets.KEYSTORE_PASSWORD }} \
+            --android-signing-key-alias ${{ secrets.KEY_ALIAS }} \
+            --android-signing-key-password ${{ secrets.KEYSTORE_PASSWORD }}
+          
           mv build/apk/*.apk build/apk/MU5001_v1.0.${{ github.run_number }}.apk
 
       - name: 上传APK

@@ -25,52 +25,58 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-        
+
       - name: 配置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'  
-          
+
       - name: 配置 Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      #添加 ~/.android 缓存，实现签名证书的持久化
-      - name: 缓存 Flet SDK 与 Gradle 与安卓签名
+      - name: 缓存 Flet SDK 与 Gradle
         uses: actions/cache@v4
         with:
           path: |
             ~/.flet
             ~/.gradle/caches
             ~/.gradle/wrapper
-            ~/.android
-          key: ${{ runner.os }}-flet-gradle-android-${{ hashFiles('**/requirements.txt') }}
+          key: ${{ runner.os }}-flet-gradle-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-flet-gradle-android-
-            
+            ${{ runner.os }}-flet-gradle-
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          
-      # 默认全架构打包，并动态生成每次不同的版本号
-      - name: 构建安卓 APK
+
+      # 每次运行都会生成字节完全相同的 keystore，保证签名源永久一致
+      - name: 还原固定签名密钥库
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.keystore
+
+      # 所有签名信息从Secrets读取，全程不变，确保每次APK签名一致
+      - name: 构建带固定签名的APK
         run: |
           yes | flet build apk \
             --org com.zte \
             --project mu5001 \
             --build-number ${{ github.run_number }} \
-            --build-version "1.0.${{ github.run_number }}"
-          
-          # 重命名生成的 apk 文件，加上版本号
+            --build-version "1.0.${{ github.run_number }}" \
+            --sign-keystore release.keystore \
+            --sign-keystore-password ${{ secrets.KEYSTORE_PASSWORD }} \
+            --sign-key-alias ${{ secrets.KEY_ALIAS }} \
+            --sign-key-password ${{ secrets.KEYSTORE_PASSWORD }}
+
+          # 重命名输出文件
           mv build/apk/*.apk build/apk/MU5001_v1.0.${{ github.run_number }}.apk
-        
-      - name: 上传 APK
+
+      - name: 上传APK
         uses: actions/upload-artifact@v4
         with:
-          name: MU5001_App_v1.0.${{ github.run_number }} 
-          # 上传路径改为重命名后的具体文件名
+          name: MU5001_App_v1.0.${{ github.run_number }}
           path: build/apk/MU5001_v1.0.${{ github.run_number }}.apk

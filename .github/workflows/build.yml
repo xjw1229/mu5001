@@ -57,6 +57,7 @@ jobs:
       - name: 构建带固定签名的APK
         run: |
           flet build apk \
+            --yes \
             --org com.zte \
             --project mu5001 \
             --build-number ${{ github.run_number }} \
@@ -67,7 +68,6 @@ jobs:
             --android-signing-key-password ${{ secrets.KEYSTORE_PASSWORD }}
           
           mv build/apk/*.apk build/apk/MU5001_v1.0.${{ github.run_number }}.apk
-
       - name: 上传APK
         uses: actions/upload-artifact@v4
         with:

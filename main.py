@@ -52,8 +52,8 @@ class ColorConfig:
     DIVIDER_COLOR = "#2A2C3E"     # 分割线
     BTN_BG = "#535773"            # 普通按钮默认背景
     BTN_HOVER_BG = "#6A6F91"      # 普通按钮悬浮背景
-    FAB_BG = "#82A5E0"            # 悬浮按钮背景
-    FAB_ICON = "#FFFFFF"          # 悬浮按钮图标
+    TOP_BTN_BG = "#82A5E0"        # 顶部按钮背景
+    TOP_BTN_TEXT = "#FFFFFF"      # 顶部按钮文字颜色
     TOAST_SUCCESS_BG = "#2D4A3E"  # 成功提示背景
     TOAST_ERROR_BG = "#5C2D2D"    # 失败提示背景
 
@@ -937,7 +937,6 @@ async def main(page: ft.Page):
 
                 login_view.visible = False
                 main_view.visible = True
-                fab_container.visible = True
 
                 await refresh_all()
                 show_toast(page, "登录成功", True)
@@ -1033,7 +1032,6 @@ async def main(page: ft.Page):
         login_status.value = "已退出登录，请重新验证"
         login_status.color = ColorConfig.TEXT_SEC
         main_view.visible = False
-        fab_container.visible = False
         login_view.visible = True
         show_toast(page, "已安全退出登录", True)
         page.update()
@@ -1068,53 +1066,6 @@ async def main(page: ft.Page):
 
         auto_refresh_task = asyncio.create_task(worker())
         logger.info("自动刷新任务已启动")
-
-    # 悬浮按钮逻辑
-    fab_state = {"expanded": False, "task": None}
-
-    async def expand_fab():
-        if fab_state["expanded"]:
-            return
-        fab_state["expanded"] = True
-        fab_inner.width = 60
-        fab_icon.name = ft.Icons.SWITCH_ACCOUNT
-        fab_icon.size = 24
-        page.update()
-
-        if fab_state["task"]:
-            fab_state["task"].cancel()
-
-        async def auto_collapse():
-            try:
-                await asyncio.sleep(3)
-                await collapse_fab()
-            except asyncio.CancelledError:
-                pass
-
-        fab_state["task"] = asyncio.create_task(auto_collapse())
-
-    async def collapse_fab():
-        if not fab_state["expanded"]:
-            return
-        fab_state["expanded"] = False
-        fab_inner.width = 24
-        fab_icon.name = ft.Icons.CHEVRON_LEFT
-        fab_icon.size = 20
-        page.update()
-
-    async def on_fab_click(e):
-        if not fab_state["expanded"]:
-            await expand_fab()
-        else:
-            await collapse_fab()
-            await do_relogin(e)
-
-    async def on_fab_pan(e):
-        dx = getattr(e.local_delta, 'x', 0) if hasattr(e, 'local_delta') else getattr(e, 'delta_x', 0)
-        if dx < -2 and not fab_state["expanded"]:
-            await expand_fab()
-        elif dx > 2 and fab_state["expanded"]:
-            await collapse_fab()
 
     # ==========================================
     # UI 构建 - 登录页
@@ -1238,7 +1189,7 @@ async def main(page: ft.Page):
         color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
         label_style=sec_style, hint_style=sec_style,
         border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
-        # 新增限制
+        # 输入限制
         input_filter=ft.NumbersOnlyInputFilter(),
     )
     rb_time_min = ft.TextField(
@@ -1246,7 +1197,7 @@ async def main(page: ft.Page):
         color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
         label_style=sec_style, hint_style=sec_style,
         border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
-        # 新增限制
+        # 输入限制
         input_filter=ft.NumbersOnlyInputFilter(),
     )
     rb_buffer = ft.TextField(
@@ -1254,7 +1205,7 @@ async def main(page: ft.Page):
         color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
         label_style=sec_style, hint_style=sec_style,
         border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
-        # 新增限制
+        # 输入限制
         input_filter=ft.NumbersOnlyInputFilter(),
     )
     row_time = ft.Row(
@@ -1457,69 +1408,67 @@ async def main(page: ft.Page):
     )
 
     # ==========================================
-    # 主视图与悬浮按钮
+    # 主视图 (吸顶布局)
     # ==========================================
+    # 左侧退出按钮
     logout_btn = create_button("退出", on_click=do_logout, height=36)
-    logout_btn.style.bgcolor = ColorConfig.FAB_BG
-    logout_btn.style.color = ColorConfig.FAB_ICON
+    logout_btn.style.bgcolor = ColorConfig.TOP_BTN_BG
+    logout_btn.style.color = ColorConfig.TOP_BTN_TEXT
 
-    title_row = ft.Row(
-        [
-            logout_btn,
-            ft.Text("设备状态", size=24, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, expand=True, color=ColorConfig.TEXT_MAIN),
-            ft.Container(width=80)
-        ],
-        alignment=ft.MainAxisAlignment.START,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER
+    # 右侧重登按钮
+    relogin_btn = create_button("重登", on_click=do_relogin, height=36)
+    relogin_btn.style.bgcolor = ColorConfig.TOP_BTN_BG
+    relogin_btn.style.color = ColorConfig.TOP_BTN_TEXT
+
+    # 固定的顶部控制栏 (Header)
+    sticky_header = ft.Container(
+        content=ft.Row(
+            [
+                logout_btn,
+                ft.Text("设备状态", size=20, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, expand=True, color=ColorConfig.TEXT_MAIN),
+                relogin_btn
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER
+        )
     )
 
+    # 可滑动的内容区域
+    scrollable_content = ft.Column(
+        [
+            status_card,
+            ft.Row([btn_refresh, btn_reboot_top], spacing=10),
+            ft.Container(height=10),
+            reboot_card,
+            ft.Container(height=10),
+            setting_card,
+            ft.Container(height=30)
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        scroll=ft.ScrollMode.AUTO,
+        expand=True  # 填满下方所有的剩余空间
+    )
+
+    # 组装最终的主视图
     main_view = ft.Container(
-        padding=15,
+        padding=15, #基础边距
         expand=True,
         visible=False,
         content=ft.Column(
             [
-                ft.Container(height=10),
-                title_row,
-                status_card,
-                ft.Row([btn_refresh, btn_reboot_top], spacing=10),
-                ft.Container(height=10),
-                reboot_card,
-                ft.Container(height=10),
-                setting_card,
-                ft.Container(height=30)
+                ft.Container(height=25), # 安全防遮挡距离（模拟状态栏高度）
+                sticky_header,           # 现在的吸顶栏被推到了安全位置
+                ft.Container(height=10), # 之前的间距
+                scrollable_content       # 自由滑动区
             ],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-            scroll=ft.ScrollMode.AUTO,
+            spacing=0,
+            expand=True 
         )
     )
 
-    fab_icon = ft.Icon(ft.Icons.CHEVRON_LEFT, color=ColorConfig.FAB_ICON, size=20)
-    fab_inner = ft.Container(
-        content=fab_icon,
-        alignment=ft.Alignment(0, 0),
-        width=24, height=48,
-        bgcolor=ColorConfig.FAB_BG,
-        border_radius=ft.BorderRadius(top_left=24, top_right=0, bottom_left=24, bottom_right=0),
-        animate=ft.Animation(250, "decelerate"),
-        on_click=on_fab_click,
-    )
-    fab_gesture = ft.GestureDetector(
-        on_pan_update=on_fab_pan,
-        content=fab_inner
-    )
-    fab_container = ft.Container(
-        content=fab_gesture,
-        right=0,
-        top=25,
-        visible=False
-    )
-
-    root_stack = ft.Stack(
-        controls=[login_view, main_view, fab_container],
-        expand=True
-    )
-    page.add(root_stack)
+    # 直接添加到 page 中，page 会准确计算 expand=True 的高度
+    page.add(login_view, main_view)
 
     # 记住密码自动登录
     if saved_pwd and saved_ip:

@@ -38,16 +38,18 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 缓存 Flet SDK 与 Gradle
+      #添加 ~/.android 缓存，实现签名证书的持久化
+      - name: 缓存 Flet SDK 与 Gradle 与安卓签名
         uses: actions/cache@v4
         with:
           path: |
             ~/.flet
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-flet-gradle-${{ hashFiles('**/requirements.txt') }}
+            ~/.android
+          key: ${{ runner.os }}-flet-gradle-android-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-flet-gradle-
+            ${{ runner.os }}-flet-gradle-android-
             
       - name: 安装依赖
         run: |
@@ -56,15 +58,19 @@ jobs:
           
       # 默认全架构打包，并动态生成每次不同的版本号
       - name: 构建安卓 APK
-        run: >
-          yes | flet build apk 
-          --org com.zte 
-          --project mu5001 
-          --build-number ${{ github.run_number }} 
-          --build-version "1.0.${{ github.run_number }}"
+        run: |
+          yes | flet build apk \
+            --org com.zte \
+            --project mu5001 \
+            --build-number ${{ github.run_number }} \
+            --build-version "1.0.${{ github.run_number }}"
+          
+          # 重命名生成的 apk 文件，加上版本号
+          mv build/apk/*.apk build/apk/MU5001_v1.0.${{ github.run_number }}.apk
         
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
           name: MU5001_App_v1.0.${{ github.run_number }} 
-          path: build/apk/*.apk
+          # 上传路径改为重命名后的具体文件名
+          path: build/apk/MU5001_v1.0.${{ github.run_number }}.apk

@@ -15,7 +15,7 @@ from typing import Optional, Dict, List, Set, Callable, Union
 # 4. 避免重复日志刷屏
 
 # ==========================================
-DEBUG_MODE = False # 调试时设为 True或False 可开关输出完整调试信息
+DEBUG_MODE = False # 调试时设为 True 或 False 可开关输出完整调试信息
 LOG_LEVEL = logging.DEBUG if DEBUG_MODE else logging.INFO
 
 logger = logging.getLogger("MU5001")
@@ -362,7 +362,6 @@ def create_button(
     text: str,
     on_click: Callable,
     height: Optional[int] = None,
-    icon: Optional[str] = None,
     expand: bool = False
 ) -> ft.Control:
     btn_style = ft.ButtonStyle(
@@ -374,7 +373,7 @@ def create_button(
         elevation={"": 0}
     )
     BtnClass = getattr(ft, "Button", ft.ElevatedButton)
-    btn = BtnClass(text, on_click=on_click, height=height, icon=icon, style=btn_style)
+    btn = BtnClass(text, on_click=on_click, height=height, style=btn_style)
     btn.expand = expand
     return btn
 
@@ -398,20 +397,20 @@ def create_checkbox_grid(
             check_color=ColorConfig.BG_COLOR
         )
         cb_map[b] = cb
+        # 定宽 Container
         controls.append(ft.Container(content=cb, width=72, padding=0, margin=0))
     return ft.Row(controls, wrap=True, spacing=5, run_spacing=0)
 
 # 在页面底部弹出浮动提示条
 def show_toast(page: ft.Page, msg: str, success: bool = True) -> None:
     bg = ColorConfig.TOAST_SUCCESS_BG if success else ColorConfig.TOAST_ERROR_BG
-    icon = "✅ " if success else "❌ "
 
     for c in list(page.overlay):
         if isinstance(c, ft.SnackBar):
             page.overlay.remove(c)
     
     snack = ft.SnackBar(
-        content=ft.Text(f"{icon}{msg}", color=ColorConfig.TEXT_MAIN, weight=ft.FontWeight.BOLD),
+        content=ft.Text(msg, color=ColorConfig.TEXT_MAIN, weight=ft.FontWeight.BOLD),
         bgcolor=bg,
         duration=3000, 
         behavior=ft.SnackBarBehavior.FLOATING
@@ -420,18 +419,6 @@ def show_toast(page: ft.Page, msg: str, success: bool = True) -> None:
     page.overlay.append(snack)
     snack.open = True
     page.update()
-
-# 构建「图标 + 内容」的标准状态行
-def build_status_row(icon: str, content: ft.Control) -> ft.Row:
-    content.expand = True
-    return ft.Row(
-        [
-            ft.Text(icon, size=16, width=28, text_align=ft.TextAlign.CENTER, color=ColorConfig.ACCENT_COLOR),
-            content
-        ],
-        spacing=5,
-        vertical_alignment=ft.CrossAxisAlignment.START
-    )
 
 # ==========================================
 # 主程序：UI 构建 + 业务逻辑
@@ -542,7 +529,7 @@ async def main(page: ft.Page):
             # 射频信息
             freq_5g = str(res.get("nr5g_action_channel", "")).strip()
             freq_4g = str(res.get("wan_active_channel", "")).strip()
-            txt_freq.value = f"频点: {freq_5g or freq_4g or '--'}"
+            txt_freq.value = f"ARFCN: {freq_5g or freq_4g or '--'}"
 
             # PCI（物理小区标识）
             def parse_pci(raw):
@@ -684,8 +671,8 @@ async def main(page: ft.Page):
                 net_mode_cbs["5G/4G/3G"].value = True
 
             # 状态提示
-            dev_status = " | 开发者已解锁" if device_state.dev_unlocked else " | ⚠️ 开发者未解锁"
-            status_text.value = "✅ 数据读取成功" + dev_status
+            dev_status = " | 开发者已解锁" if device_state.dev_unlocked else " | 开发者未解锁"
+            status_text.value = "数据读取成功" + dev_status
             status_text.color = ColorConfig.ACCENT_COLOR if device_state.dev_unlocked else ColorConfig.ERROR_COLOR
 
             await fetch_realtime()
@@ -694,7 +681,7 @@ async def main(page: ft.Page):
             logger.info("全量配置刷新完成")
 
         except Exception:
-            status_text.value = "⚠️ 读取失败，请检查连接"
+            status_text.value = "读取失败，请检查连接"
             status_text.color = ColorConfig.ERROR_COLOR
             if e:
                 show_toast(page, "数据读取失败，请检查连接", False)
@@ -705,15 +692,15 @@ async def main(page: ft.Page):
         show_toast(page, "正在发送重启指令...", True)
         try:
             if await client.post_cmd("REBOOT_DEVICE"):
-                status_text.value = "✅ 重启指令已发送，设备即将重启"
+                status_text.value = "重启指令已发送，设备即将重启"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "设备即将重启", True)
             else:
-                status_text.value = "❌ 重启失败"
+                status_text.value = "重启失败"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "设备重启失败", False)
         except Exception:
-            status_text.value = "❌ 重启失败"
+            status_text.value = "重启失败"
             status_text.color = ColorConfig.ERROR_COLOR
             show_toast(page, "设备重启失败", False)
         page.update()
@@ -721,21 +708,21 @@ async def main(page: ft.Page):
     async def on_wifi_sleep_save(e):
         try:
             if await client.post_cmd("SET_WIFI_SLEEP_INFO", {"sysIdleTimeToSleep": wifi_sleep.value}):
-                status_text.value = "✅ WiFi 休眠设置已保存"
+                status_text.value = "WiFi 休眠设置已保存"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "WiFi 休眠设置保存成功", True)
             else:
-                status_text.value = "❌ 保存失败"
+                status_text.value = "保存失败"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "WiFi 休眠设置保存失败", False)
         except Exception:
-            status_text.value = "❌ 保存失败"
+            status_text.value = "保存失败"
             status_text.color = ColorConfig.ERROR_COLOR
         page.update()
 
     async def on_apply_lte(e):
         if not lte_selected:
-            show_toast(page, "⚠️ 请至少勾选一个 4G 频段", False)
+            show_toast(page, "请至少勾选一个 4G 频段", False)
             return
         try:
             ok = await client.post_cmd("BAND_SELECT", {
@@ -743,21 +730,21 @@ async def main(page: ft.Page):
                 "is_lte_band": "1", "lte_band_mask": lte_bands_to_mask(list(lte_selected))
             })
             if ok:
-                status_text.value = "✅ 4G 频段设置完成"
+                status_text.value = "4G 频段设置完成"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "4G 频段设置成功", True)
             else:
-                status_text.value = "❌ 设置失败，请确认开发者权限已解锁"
+                status_text.value = "设置失败，请确认开发者权限已解锁"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "4G 频段设置失败，请确认开发者权限", False)
         except Exception:
-            status_text.value = "❌ 设置失败"
+            status_text.value = "设置失败"
             status_text.color = ColorConfig.ERROR_COLOR
         page.update()
 
     async def on_apply_sa(e):
         if not nr_sa_selected:
-            show_toast(page, "⚠️ 请至少勾选一个 5G SA 频段", False)
+            show_toast(page, "请至少勾选一个 5G SA 频段", False)
             return
         try:
             ok = await client.post_cmd("WAN_PERFORM_NR5G_SANSA_BAND_LOCK", {
@@ -765,21 +752,21 @@ async def main(page: ft.Page):
                 "type": "0"
             })
             if ok:
-                status_text.value = "✅ 5G SA 频段设置完成"
+                status_text.value = "5G SA 频段设置完成"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "5G SA 频段设置成功", True)
             else:
-                status_text.value = "❌ 设置失败，请确认开发者权限已解锁"
+                status_text.value = "设置失败，请确认开发者权限已解锁"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "5G SA 频段设置失败，请确认开发者权限", False)
         except Exception:
-            status_text.value = "❌ 设置失败"
+            status_text.value = "设置失败"
             status_text.color = ColorConfig.ERROR_COLOR
         page.update()
 
     async def on_apply_nsa(e):
         if not nr_nsa_selected:
-            show_toast(page, "⚠️ 请至少勾选一个 5G NSA 频段", False)
+            show_toast(page, "请至少勾选一个 5G NSA 频段", False)
             return
         try:
             ok = await client.post_cmd("WAN_PERFORM_NR5G_SANSA_BAND_LOCK", {
@@ -787,34 +774,34 @@ async def main(page: ft.Page):
                 "type": "1"
             })
             if ok:
-                status_text.value = "✅ 5G NSA 频段设置完成"
+                status_text.value = "5G NSA 频段设置完成"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "5G NSA 频段设置成功", True)
             else:
-                status_text.value = "❌ 设置失败，请确认开发者权限已解锁"
+                status_text.value = "设置失败，请确认开发者权限已解锁"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "5G NSA 频段设置失败，请确认开发者权限", False)
         except Exception:
-            status_text.value = "❌ 设置失败"
+            status_text.value = "设置失败"
             status_text.color = ColorConfig.ERROR_COLOR
         page.update()
 
     async def on_cell_lock(e):
         if not cell_pci.value or not cell_earfcn.value:
-            show_toast(page, "⚠️ 请填写 PCI 与 EARFCN", False)
+            show_toast(page, "请填写 PCI 与 ARFCN", False)
             return
         lock_val = f"{cell_pci.value.strip()},{cell_earfcn.value.strip()},{cell_band.value},{cell_scs.value}"
         try:
             if await client.post_cmd("NR5G_LOCK_CELL_SET", {"nr5g_cell_lock": lock_val}):
-                status_text.value = "✅ 锁小区配置下发完成"
+                status_text.value = "锁小区配置下发完成"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "锁小区成功", True)
             else:
-                status_text.value = "❌ 锁小区失败，请确认开发者权限已解锁"
+                status_text.value = "锁小区失败，请确认开发者权限已解锁"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "锁小区失败，请确认开发者权限", False)
         except Exception:
-            status_text.value = "❌ 锁小区失败"
+            status_text.value = "锁小区失败"
             status_text.color = ColorConfig.ERROR_COLOR
         page.update()
 
@@ -825,15 +812,15 @@ async def main(page: ft.Page):
                 cell_earfcn.value = ""
                 cell_band.value = "1"
                 cell_scs.value = "15"
-                status_text.value = "✅ 小区锁定已解除"
+                status_text.value = "小区锁定已解除"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "小区锁定已解除", True)
             else:
-                status_text.value = "❌ 解除失败，请确认开发者权限已解锁"
+                status_text.value = "解除失败，请确认开发者权限已解锁"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "解除锁定失败", False)
         except Exception:
-            status_text.value = "❌ 解除失败"
+            status_text.value = "解除失败"
             status_text.color = ColorConfig.ERROR_COLOR
         page.update()
 
@@ -853,15 +840,15 @@ async def main(page: ft.Page):
         }
         try:
             if await client.post_cmd("FIX_TIME_REBOOT_SCHEDULE", payload):
-                status_text.value = "✅ 定时重启配置已保存"
+                status_text.value = "定时重启配置已保存"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "定时重启配置保存成功，请确保已开启功能", True)
             else:
-                status_text.value = "❌ 保存失败，请检查连接状态"
+                status_text.value = "保存失败，请检查连接状态"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "定时重启配置保存失败，请确保已开启功能", False)
         except Exception:
-            status_text.value = "❌ 保存失败"
+            status_text.value = "保存失败"
             status_text.color = ColorConfig.ERROR_COLOR
         page.update()
 
@@ -883,19 +870,19 @@ async def main(page: ft.Page):
             ok_connect = await client.post_cmd("CONNECT_NETWORK", {"notCallback": "true"})
 
             if ok_set and ok_connect:
-                status_text.value = "✅ 网络模式切换成功（请等待 5 秒后刷新状态）"
+                status_text.value = "网络模式切换成功（请等待 5 秒后刷新状态）"
                 status_text.color = ColorConfig.ACCENT_COLOR
                 show_toast(page, "网络切换成功，再次切换需等待 5 秒", True)
             else:
-                status_text.value = "❌ 设置失败（配置未生效或操作期间被挤下线）"
+                status_text.value = "设置失败（配置未生效或操作期间被挤下线）"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "网络切换失败（可能被挤下线）", False)
         except httpx.RequestError:
-            status_text.value = "❌ 网络连接异常"
+            status_text.value = "网络连接异常"
             status_text.color = ColorConfig.ERROR_COLOR
             show_toast(page, "网络连接异常", False)
         except Exception:
-            status_text.value = "❌ 设置失败"
+            status_text.value = "设置失败"
             status_text.color = ColorConfig.ERROR_COLOR
             show_toast(page, "网络切换失败", False)
         page.update()
@@ -905,7 +892,7 @@ async def main(page: ft.Page):
         ip = ip_input.value
         pwd = pwd_input.value
         if not pwd:
-            login_status.value = "⚠️ 请输入密码"
+            login_status.value = "请输入密码"
             login_status.color = ColorConfig.ERROR_COLOR
             page.update()
             return
@@ -955,7 +942,7 @@ async def main(page: ft.Page):
                         pass
                 remember_cb.value = False
                 pwd_input.value = ""
-                login_status.value = "❌ 密码错误或账号锁定"
+                login_status.value = "密码错误或账号锁定"
                 login_status.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "密码错误或账号锁定", False)
         except Exception:
@@ -970,7 +957,7 @@ async def main(page: ft.Page):
                 except Exception:
                     pass
             remember_cb.value = False
-            login_status.value = "❌ 连接失败，请检查地址和网络"
+            login_status.value = "连接失败，请检查地址和网络"
             login_status.color = ColorConfig.ERROR_COLOR
             show_toast(page, "连接失败，请检查地址和网络", False)
 
@@ -987,20 +974,20 @@ async def main(page: ft.Page):
             if success:
                 dev_ok = await client.unlock_developer()
                 if dev_ok:
-                    status_text.value = "✅ 重登成功并已解锁开发者权限"
+                    status_text.value = "重登成功并已解锁开发者权限"
                     status_text.color = ColorConfig.ACCENT_COLOR
                     show_toast(page, "重登成功，开发者解锁成功", True)
                 else:
-                    status_text.value = "⚠️ 重登成功，开发者解锁失败"
+                    status_text.value = "重登成功，开发者解锁失败"
                     status_text.color = ColorConfig.ERROR_COLOR
                     show_toast(page, "重登成功，开发者解锁失败", False)
                 await refresh_all()
             else:
-                status_text.value = "❌ 重新登录失败，可能密码已修改或被锁定"
+                status_text.value = "重新登录失败，可能密码已修改或被锁定"
                 status_text.color = ColorConfig.ERROR_COLOR
                 show_toast(page, "重登失败", False)
         except Exception:
-            status_text.value = "❌ 重登连接失败，请检查网络"
+            status_text.value = "重登连接失败，请检查网络"
             status_text.color = ColorConfig.ERROR_COLOR
             show_toast(page, "连接失败，请检查网络", False)
         page.update()
@@ -1131,7 +1118,7 @@ async def main(page: ft.Page):
     txt_rx_speed = ft.Text("下载速度: --", size=14, color=ColorConfig.TEXT_MAIN)
     txt_traffic_rt = ft.Text("本次流量: --", size=14, color=ColorConfig.TEXT_MAIN)
     txt_traffic_mo = ft.Text("当月流量: --", size=14, color=ColorConfig.TEXT_MAIN)
-    txt_freq = ft.Text("频点: --", size=14, color=ColorConfig.TEXT_MAIN)
+    txt_freq = ft.Text("ARFCN: --", size=14, color=ColorConfig.TEXT_MAIN)
     txt_pci = ft.Text("PCI: --", size=14, color=ColorConfig.TEXT_MAIN)
     txt_rsrp = ft.Text("信号强度: --", size=14, color=ColorConfig.TEXT_MAIN)
     txt_sinr = ft.Text("信噪比: --", size=14, color=ColorConfig.TEXT_MAIN)
@@ -1142,20 +1129,24 @@ async def main(page: ft.Page):
 
     status_card = ft.Container(
         content=ft.Column([
-            build_status_row("🔋", txt_battery),
-            build_status_row("📶", txt_network),
-            build_status_row("🌐", txt_wan_ip),
-            build_status_row("👥", txt_users),
+            txt_battery,
+            txt_network,
+            txt_wan_ip,
+            txt_users,
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
-            build_status_row("🚀", ft.Column([txt_tx_speed, txt_rx_speed], spacing=4)),
-            build_status_row("📊", ft.Column([txt_traffic_rt, txt_traffic_mo], spacing=4)),
+            txt_tx_speed, 
+            txt_rx_speed,
+            txt_traffic_rt, 
+            txt_traffic_mo,
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
-            build_status_row("📡", txt_freq),
-            build_status_row("📍", txt_pci),
-            build_status_row("📶", txt_rsrp),
-            build_status_row("⚡", txt_sinr),
+            txt_freq,
+            txt_pci,
+            txt_rsrp,
+            txt_sinr,
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
-            build_status_row("🌡️", ft.Column([txt_temp_bat, txt_temp_mdm, txt_temp_pa], spacing=4)),
+            txt_temp_bat, 
+            txt_temp_mdm, 
+            txt_temp_pa,
             ft.Divider(height=8, color=ColorConfig.DIVIDER_COLOR),
             status_text
         ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
@@ -1189,7 +1180,6 @@ async def main(page: ft.Page):
         color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
         label_style=sec_style, hint_style=sec_style,
         border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
-        # 输入限制
         input_filter=ft.NumbersOnlyInputFilter(),
     )
     rb_time_min = ft.TextField(
@@ -1197,7 +1187,6 @@ async def main(page: ft.Page):
         color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
         label_style=sec_style, hint_style=sec_style,
         border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
-        # 输入限制
         input_filter=ft.NumbersOnlyInputFilter(),
     )
     rb_buffer = ft.TextField(
@@ -1205,7 +1194,6 @@ async def main(page: ft.Page):
         color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
         label_style=sec_style, hint_style=sec_style,
         border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
-        # 输入限制
         input_filter=ft.NumbersOnlyInputFilter(),
     )
     row_time = ft.Row(
@@ -1222,12 +1210,13 @@ async def main(page: ft.Page):
             check_color=ColorConfig.BG_COLOR
         ) for i, w in enumerate(week_days)
     ]
-    row_weeks = ft.ResponsiveRow(
-        controls=[
-            ft.Container(content=cb, col={"xs": 4, "sm": 3, "md": 2}, padding=0, margin=0)
-            for cb in week_cbs
-        ],
-        run_spacing=0, spacing=0
+    
+    # 定宽 Container
+    row_weeks = ft.Row(
+        controls=[ft.Container(content=cb, width=75, padding=0, margin=0) for cb in week_cbs],
+        wrap=True,
+        spacing=10,
+        run_spacing=5
     )
 
     rb_interval = ft.Dropdown(
@@ -1242,15 +1231,15 @@ async def main(page: ft.Page):
 
     reboot_card = ft.Container(
         content=ft.Column([
-            ft.Text("⏱️ 定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
+            ft.Text("定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
             txt_local_time,
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
             reboot_enable, reboot_hint,row_time, reboot_mode, 
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
-            ft.Text("🔹 选项1: 按周触发（仅选 1 生效）", size=13, color=ColorConfig.TEXT_SEC, weight=ft.FontWeight.BOLD),
+            ft.Text("选项1: 按周触发（仅选 1 生效）", size=13, color=ColorConfig.TEXT_SEC, weight=ft.FontWeight.BOLD),
             row_weeks,
             ft.Container(height=5),
-            ft.Text("🔹 选项2: 间隔触发（仅选 2 生效）", size=13, color=ColorConfig.TEXT_SEC, weight=ft.FontWeight.BOLD),
+            ft.Text("选项2: 间隔触发（仅选 2 生效）", size=13, color=ColorConfig.TEXT_SEC, weight=ft.FontWeight.BOLD),
             rb_interval,
             ft.Container(height=10),
             btn_save_reboot
@@ -1279,7 +1268,6 @@ async def main(page: ft.Page):
     )
     btn_wifi_sleep = create_button("保存休眠设置", on_click=on_wifi_sleep_save)
 
-    # 网络模式网格
     net_mode_controls = []
     for name in NET_CONFIG.keys():
         cb = ft.Checkbox(
@@ -1289,10 +1277,15 @@ async def main(page: ft.Page):
             check_color=ColorConfig.BG_COLOR
         )
         net_mode_cbs[name] = cb
-        net_mode_controls.append(
-            ft.Container(content=cb, col={"xs": 6, "sm": 4, "md": 3}, padding=0, margin=0)
-        )
-    net_mode_grid = ft.ResponsiveRow(net_mode_controls, run_spacing=0, spacing=0)
+        # 定宽 Container
+        net_mode_controls.append(ft.Container(content=cb, width=120, padding=0, margin=0))
+
+    net_mode_grid = ft.Row(
+        controls=net_mode_controls, 
+        wrap=True, 
+        spacing=10, 
+        run_spacing=5
+    )
     btn_net_mode_apply = create_button("应用网络锁定", on_click=on_apply_net_mode)
 
     # 频段网格
@@ -1309,11 +1302,10 @@ async def main(page: ft.Page):
         expand=True, color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
         label_style=sec_style, hint_style=sec_style,
         border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
-        # ====== 新增以下两行限制 ======
-        input_filter=ft.NumbersOnlyInputFilter(),  # 强制只能输入数字
+        input_filter=ft.NumbersOnlyInputFilter(),
     )
     row_pci = ft.Row([
-        ft.Row([ft.Text("PCI", color=ColorConfig.TEXT_MAIN), ft.Text("*", color=ColorConfig.ACCENT_COLOR)], spacing=2, width=LABEL_W),
+        ft.Text("PCI", color=ColorConfig.TEXT_MAIN, width=LABEL_W),
         cell_pci
     ], spacing=10)
 
@@ -1321,11 +1313,10 @@ async def main(page: ft.Page):
         expand=True, color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
         label_style=sec_style, hint_style=sec_style,
         border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
-        # ====== 新增以下两行限制 ======
-        input_filter=ft.NumbersOnlyInputFilter(),  # 强制只能输入数字
+        input_filter=ft.NumbersOnlyInputFilter(),
     )
     row_earfcn = ft.Row([
-        ft.Row([ft.Text("EARFCN", color=ColorConfig.TEXT_MAIN), ft.Text("*", color=ColorConfig.ACCENT_COLOR)], spacing=2, width=LABEL_W),
+        ft.Text("ARFCN", color=ColorConfig.TEXT_MAIN, width=LABEL_W),
         cell_earfcn
     ], spacing=10)
 
@@ -1364,41 +1355,41 @@ async def main(page: ft.Page):
     btn_cell_unlock = create_button("清除锁定", on_click=on_cell_unlock, height=45, expand=True)
     btn_cell_reboot = create_button("重启设备", on_click=on_reboot, height=45, expand=True)
 
-    btn_refresh = create_button("刷新数据", on_click=refresh_all, icon=ft.Icons.REFRESH, expand=True)
-    btn_reboot_top = create_button("重启设备", on_click=on_reboot, icon=ft.Icons.POWER_SETTINGS_NEW, expand=True)
+    btn_refresh = create_button("刷新数据", on_click=refresh_all, expand=True)
+    btn_reboot_top = create_button("重启设备", on_click=on_reboot, expand=True)
 
     setting_card = ft.Container(
         content=ft.Column([
-            ft.Text("⚙️ 高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
+            ft.Text("高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
             ft.Divider(height=10, color=ColorConfig.DIVIDER_COLOR),
 
-            ft.Text("📶 WiFi 省电休眠", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
+            ft.Text("WiFi 省电休眠", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
             wifi_sleep, btn_wifi_sleep,
             ft.Container(height=15),
 
-            ft.Text("🌐 网络模式锁定", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
+            ft.Text("网络模式锁定", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
             net_mode_grid, btn_net_mode_apply,
             ft.Container(height=15),
 
             ft.Row([
-                ft.Text("📡 网络频段锁定", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
+                ft.Text("网络频段锁定", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
                 ft.Text("（每项至少保留一个频段）", size=12, color=ColorConfig.TEXT_SEC)
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
 
-            ft.Text("🔹 4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
+            ft.Text("4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
             lte_grid, btn_lte_apply,
             ft.Container(height=10),
 
-            ft.Text("🔹 5G SA 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
+            ft.Text("5G SA 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
             sa_grid, btn_sa_apply,
             ft.Container(height=10),
 
-            ft.Text("🔹 5G NSA 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
+            ft.Text("5G NSA 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
             nsa_grid, btn_nsa_apply,
             ft.Container(height=10),
 
-            ft.Text("🔹 5G 锁定小区", size=14, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
+            ft.Text("5G 锁定小区", size=14, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
             row_pci, row_earfcn, row_band, row_scs,
             cell_tip, btn_cell_apply,

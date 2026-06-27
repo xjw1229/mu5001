@@ -7,14 +7,15 @@ on:
       - 'README.md'
       - 'read.me'
       - '**/*.md'
-      - 'pyproject.toml'
-      - 'requirements.txt'
   workflow_dispatch: 
+
 permissions:
   contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -52,29 +53,25 @@ jobs:
 
       - name: 还原固定签名密钥库
         run: |
-          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.keystore
-
-      # 使用绝对路径来还原文件，确保构建时能找到
-      - name: 还原固定签名密钥库
-        run: |
           printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > $GITHUB_WORKSPACE/release.keystore
 
-      # 在构建命令中指向绝对路径
-      - name: 构建带固定签名的APK
+      - name: 构建带固定签名的 APK
+        env:
+          FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           flet build apk \
             --yes \
             --org com.zte \
-            --project mu5001 \
+            --product "mu5001" \
             --build-number ${{ github.run_number }} \
             --build-version "1.0.${{ github.run_number }}" \
-            --android-signing-key-store $GITHUB_WORKSPACE/release.keystore \
-            --android-signing-key-store-password ${{ secrets.KEYSTORE_PASSWORD }} \
-            --android-signing-key-alias ${{ secrets.KEY_ALIAS }} \
-            --android-signing-key-password ${{ secrets.KEYSTORE_PASSWORD }}
+            --android-signing-key-store $GITHUB_WORKSPACE/release.keystore
           
-          # 移动输出文件
+          # 移动输出文件并重命名
           mv build/apk/*.apk build/apk/MU5001_v1.0.${{ github.run_number }}.apk
+          
       - name: 上传APK
         uses: actions/upload-artifact@v4
         with:

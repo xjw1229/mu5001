@@ -44,6 +44,7 @@ class ColorConfig:
     INPUT_BG = "#36394F"          # 输入框/下拉框背景
     TEXT_MAIN = "#FFFFFF"         # 主要文字
     TEXT_SEC = "#A1A4B0"          # 次要文字/提示文字
+    SWITCH_LABEL = "#FFF9F2"      # 开关说明文字
     ACCENT_COLOR = "#82A5E0"      # 主题强调色
     ERROR_COLOR = "#E08282"       # 错误、警告色
     DIVIDER_COLOR = "#2A2C3E"     # 分割线
@@ -766,7 +767,7 @@ class RebootCard(ft.Container):
         self.txt_local_time = ft.Text("设备当前时间: --", size=12, color=ColorConfig.TEXT_SEC)    
         # 定时重启功能绑定 on_change 事件
         self.reboot_enable = ft.Switch(
-            label="定时重启", value=False,
+            value=False,
             active_track_color=ColorConfig.ACCENT_COLOR, inactive_track_color=ColorConfig.BG_COLOR,
             thumb_color=ColorConfig.TEXT_MAIN,
             on_change=self.on_reboot_switch_change
@@ -816,7 +817,8 @@ class RebootCard(ft.Container):
         self.content = ft.Column([
             ft.Text("定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
             self.txt_local_time, ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
-            self.reboot_enable, self.reboot_hint, row_time, self.reboot_mode, 
+            ft.Row([self.reboot_enable, ft.Text("定时重启", color=ColorConfig.SWITCH_LABEL)], vertical_alignment=ft.CrossAxisAlignment.CENTER), 
+            self.reboot_hint, row_time, self.reboot_mode,
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
             ft.Text("选项1: 按周触发（仅选 1 生效）", size=13, color=ColorConfig.TEXT_SEC, weight=ft.FontWeight.BOLD),
             row_weeks, ft.Container(height=5),
@@ -969,7 +971,6 @@ class SettingsCard(ft.Container):
         
         # 数据连接开关
         self.data_switch = ft.Switch(
-            label="数据连接",
             value=True,
             active_track_color=ColorConfig.ACCENT_COLOR,
             inactive_track_color=ColorConfig.BG_COLOR,
@@ -1021,7 +1022,7 @@ class SettingsCard(ft.Container):
             
             # 网络模式锁定，数据连接开关
             ft.Text("网络模式锁定", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
-            self.data_switch,
+            ft.Row([self.data_switch, ft.Text("数据连接", color=ColorConfig.SWITCH_LABEL)], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             net_mode_grid, btn_net_mode_apply, ft.Container(height=15),
             
             ft.Row([

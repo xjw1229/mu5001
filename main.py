@@ -1364,7 +1364,7 @@ async def main(page: ft.Page):
                 "monthly_tx_bytes,monthly_rx_bytes,wan_active_band,nr5g_action_band,"
                 "wan_active_channel,lte_pci,lte_rsrp,lte_snr,cell_id,Z5g_Cell_ID,"
                 "nr5g_cell_id,network_provider,realtime_time,lte_rsrq,Z5g_rsrq,lte_rssi,"
-                "ppp_status"
+                "Z5g_rssi,nr5g_rssi,ppp_status"
             )
             res = await client.get_cmd(cmd, multi_data=True)
             

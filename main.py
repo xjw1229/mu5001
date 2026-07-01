@@ -1586,13 +1586,13 @@ async def main(page: ft.Page):
         if page.width <= 0: 
             return
 
-        # 缩放临界值默认为300 
-        is_small = page.width <= 300
+        # 缩放临界值默认为340 
+        is_small = page.width <= 340
         
         # 小屏状态同步给 StatusCard
         status_card.is_small = is_small
         
-        scale = max(0.6, page.width / 320) if is_small else 1.0
+        scale = max(0.6, page.width / 320)
 
         def scale_node(ctrl):
             if not ctrl: return

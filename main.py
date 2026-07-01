@@ -453,7 +453,7 @@ class LoginView(ft.Container):
             check_color=ColorConfig.BG_COLOR
         )
         self.login_status = ft.Text("输入账号密码登录", color=ColorConfig.TEXT_SEC, text_align=ft.TextAlign.CENTER)
-        self.login_btn = create_button("一键登录", on_click=self.do_login, height=45)
+        self.login_btn = create_button("登录", on_click=self.do_login, height=45)
         self.content = ft.Column(
             [
                 ft.Container(height=40),
@@ -815,7 +815,7 @@ class RebootCard(ft.Container):
         )
         self.btn_save_reboot = create_button("保存重启规则", on_click=self.on_save_reboot)
         
-        # 2. 核心改动：创建一个用来动态切换排版的容器
+        # 创建一个用来动态切换排版的容器
         self.colon = ft.Text(":", size=20, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN)
         self.time_container = ft.Container()
         # 默认使用大屏的横排布局 (Row)
@@ -832,7 +832,7 @@ class RebootCard(ft.Container):
             ft.Row([self.reboot_enable, ft.Text("定时重启", color=ColorConfig.SWITCH_LABEL)], vertical_alignment=ft.CrossAxisAlignment.CENTER), 
             self.reboot_hint, 
             
-            self.time_container,  # 动态容器，替代原本写死的 row_time
+            self.time_container,  # 动态容器
             
             self.reboot_mode,
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
@@ -1053,10 +1053,10 @@ class SettingsCard(ft.Container):
             ft.Row([self.data_switch, ft.Text("数据连接", color=ColorConfig.SWITCH_LABEL)], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             net_mode_grid, btn_net_mode_apply, ft.Container(height=15),
             
-            ft.Row([
+            ft.Column([
                 ft.Text("网络频段锁定", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
-                ft.Text("（每项至少保留一个频段）", size=12, color=ColorConfig.TEXT_SEC)
-            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Text("每项至少保留一个频段", size=12, color=ColorConfig.TEXT_SEC)
+            ], spacing=2),
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
             ft.Text("4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
             lte_grid, btn_lte_apply, ft.Container(height=10),
@@ -1586,13 +1586,14 @@ async def main(page: ft.Page):
         if page.width <= 0: 
             return
 
-        # 缩放临界值默认为340 
-        is_small = page.width <= 340
+        #缩放临界值 340dp
+        is_small = page.width < 340
         
         # 小屏状态同步给 StatusCard
         status_card.is_small = is_small
         
-        scale = max(0.6, page.width / 320)
+        # 缩放基准调整为 360dp
+        scale = max(0.6, page.width / 360) if is_small else 1.0
 
         def scale_node(ctrl):
             if not ctrl: return
@@ -1605,7 +1606,7 @@ async def main(page: ft.Page):
             # 1. 纯文本
             if isinstance(ctrl, ft.Text):
                 if "size" not in state: state["size"] = ctrl.size or 14
-                ctrl.size = max(11, int(state["size"] * scale)) # 字体兜底，防过小
+                ctrl.size = max(11, int(state["size"] * scale))
 
             # 2. 输入框和下拉菜单
             elif isinstance(ctrl, (ft.TextField, ft.Dropdown)):
@@ -1615,9 +1616,11 @@ async def main(page: ft.Page):
                 if hasattr(ctrl, "label_style") and ctrl.label_style:
                     lid = id(ctrl.label_style)
                     if lid not in _orig_states: _orig_states[lid] = {"size": ctrl.label_style.size or 14}
-                    ctrl.label_style.size = int(_orig_states[lid]["size"] * scale)
+                    ctrl.label_style.size = max(10, int(_orig_states[lid]["size"] * scale))
                 
+                # 动态简化标签，防止拥挤
                 if getattr(ctrl, "label", "") in ["缓冲时间", "缓冲"]:
+                    # 只有宽度小于 340 才简化为"缓冲"，实机保持"缓冲时间"
                     ctrl.label = "缓冲" if is_small else "缓冲时间"
                     
                 ctrl.content_padding = None 
@@ -1630,14 +1633,10 @@ async def main(page: ft.Page):
                 if "btn_text_size" not in state: state["btn_text_size"] = ctrl.style.text_style.size or 14
                 if "height" not in state: state["height"] = ctrl.height
                 
-                # 缩小字体，但保证最小有 12 号，避免文字太大导致折行
                 ctrl.style.text_style.size = max(12, int(state["btn_text_size"] * scale))
-                
-                # 底层系统的默认内边距计算，防止文字被垂直裁减成几个像素点
                 ctrl.style.padding = None 
                 
                 if state["height"]:
-                    # 按钮保底给个 36 的高度，留足文字渲染空间
                     ctrl.height = max(36, int(state["height"] * scale)) if is_small else state["height"]
 
             # 4. 单选框和开关
@@ -1678,27 +1677,23 @@ async def main(page: ft.Page):
         header_gap.height = 2 if is_small else 10      
         main_view.padding = 2 if is_small else 15      
         
-        # 动态控制锁小区表单标签
+        # 动态控制锁小区表单标签 (保留大屏左右，小屏上下的布局)
         settings_card.lbl_pci_side.visible = not is_small
         settings_card.lbl_pci_top.visible = is_small
-        
         settings_card.lbl_earfcn_side.visible = not is_small
         settings_card.lbl_earfcn_top.visible = is_small
-        
         settings_card.lbl_band_side.visible = not is_small
         settings_card.lbl_band_top.visible = is_small
-        
         settings_card.lbl_scs_side.visible = not is_small
         settings_card.lbl_scs_top.visible = is_small
 
         # ==========================================================
-        # 动态控制定时重启排版 (大屏横排，小屏竖排)
+        # 动态控制定时重启排版 (仅在 340 以下的情况才换行)
         # ==========================================================
-        # 检查当前容器内装的是 Row(横) 还是 Column(竖)
         current_is_col = isinstance(reboot_card.time_container.content, ft.Column)
         
         if is_small and not current_is_col:
-            # 切换到小屏：取消宽度均分(expand)，改成竖排(Column)
+            # 极限小屏 (< 340)：取消 expand，改为竖排 Column
             reboot_card.rb_time_hr.expand = False
             reboot_card.rb_time_min.expand = False
             reboot_card.rb_buffer.expand = False
@@ -1707,7 +1702,7 @@ async def main(page: ft.Page):
                 spacing=5
             )
         elif not is_small and current_is_col:
-            # 切换到大屏：恢复宽度均分(expand)，改成横排(Row)
+            # 正常 (>= 340)：恢复完美的横排 Row 
             reboot_card.rb_time_hr.expand = 1
             reboot_card.rb_time_min.expand = 1
             reboot_card.rb_buffer.expand = 1
@@ -1720,35 +1715,22 @@ async def main(page: ft.Page):
         # 顶部吸顶栏小屏时防溢出
         # ==========================================================
         if is_small:
-            # 缩减顶部按钮的水平和垂直内边距
             if logout_btn.style: logout_btn.style.padding = ft.Padding.symmetric(horizontal=8, vertical=0)
             if relogin_btn.style: relogin_btn.style.padding = ft.Padding.symmetric(horizontal=8, vertical=0)
-            
-            # 强制把按钮高度压扁，字体缩小
             logout_btn.height = 26
             relogin_btn.height = 26
             if logout_btn.style.text_style: logout_btn.style.text_style.size = 12
             if relogin_btn.style.text_style: relogin_btn.style.text_style.size = 12
-            
-            # 当屏幕极其狭窄时，隐藏标题
-            if page.width < 260:
-                header_text.visible = False
-            else:
-                header_text.visible = True
+            header_text.visible = False if page.width < 260 else True
         else:
-            # 屏幕够大时，恢复系统默认的内边距和标题显示
             if logout_btn.style: logout_btn.style.padding = None
             if relogin_btn.style: relogin_btn.style.padding = None
-            
-            # 恢复原来的高度和字体大小
             logout_btn.height = 36
             relogin_btn.height = 36
             if logout_btn.style.text_style: logout_btn.style.text_style.size = 14
             if relogin_btn.style.text_style: relogin_btn.style.text_style.size = 14
-            
             header_text.visible = True
 
-        # 刷新页面
         page.update()
 
     # 绑定监听

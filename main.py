@@ -60,7 +60,6 @@ API_TIMEOUT = 5               # 普通 API 请求超时
 LOGIN_TIMEOUT = 3             # 登录相关请求超时
 AUTO_REFRESH_INTERVAL = 1     # 实时数据自动刷新间隔
 NET_SWITCH_DELAY = 0.4        # 网络断连/重连等待时间
-LABEL_W = 75                  # 表单左侧标签统一宽度
 
 # 网络模式映射：界面显示名 <-> 设备读写参数
 NET_CONFIG = {
@@ -558,12 +557,13 @@ class LoginView(ft.Container):
         self.update()
 
 # ==========================================
-# UI 组件拆分 - 状态卡片
+# UI 组件拆分 - 状态卡片 (Diff 渲染优化)
 # ==========================================
 class StatusCard(ft.Container):
     def __init__(self):
         super().__init__(padding=15, bgcolor=ColorConfig.CARD_BG, border_radius=12)
         self.is_small = False  # 记录当前是否为小屏幕
+        self._last_data_hash = {}  #新增：维护每个文本控件最后一次渲染的值，用于 Diff 优化
 
         # 1. 基础网络信息
         self.txt_provider = ft.Text("运营商: --", size=14, color=ColorConfig.TEXT_MAIN)
@@ -608,13 +608,24 @@ class StatusCard(ft.Container):
         ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def set_global_status(self, text: str, color: str):
-        self.status_text.value = text
-        self.status_text.color = color
-        self.update()
+        # Diff 优化：状态栏文本或颜色发生变化时才触发重绘
+        if self.status_text.value != text or self.status_text.color != color:
+            self.status_text.value = text
+            self.status_text.color = color
+            self.update()
 
     def update_realtime(self, res: dict, macs_count: Optional[int] = None):
-        # 动态换行：小屏强制换行防抖动，大屏保持正常空格并排
         sep = "\n" if self.is_small else " "
+        has_changes = False  # 标记本次拉取是否有任何字段发生变化
+
+        # 核心 Diff 函数：对比新旧值，只有变化时才赋值并标记脏数据
+        def update_field(ctrl: ft.Text, new_val: str):
+            nonlocal has_changes
+            ctrl_id = id(ctrl)
+            if self._last_data_hash.get(ctrl_id) != new_val:
+                ctrl.value = new_val
+                self._last_data_hash[ctrl_id] = new_val
+                has_changes = True
 
         # 设备状态与网络信息
         net_type = res.get('network_type', '?')
@@ -625,37 +636,39 @@ class StatusCard(ft.Container):
         band = nr_band if (is_5g and nr_band) else lte_band
         
         provider = str(res.get('network_provider', '')).upper()
-        self.txt_provider.value = f"运营商:{sep}{provider or '--'}"
+        update_field(self.txt_provider, f"运营商:{sep}{provider or '--'}")
         
         bat = str(res.get('battery_value', '?'))
         charge = "充电中" if str(res.get('battery_charging', '')) in ['1', '2'] else "未充电"
-        self.txt_battery.value = f"电量:{sep}{bat}% ({charge})"
-        self.txt_network.value = f"网络:{sep}{net_type} ({band})" if band else f"网络:{sep}{net_type}"
-        self.txt_wan_ip.value = f"WAN IP:{sep}{res.get('wan_ipaddr', '未分配')}"
+        update_field(self.txt_battery, f"电量:{sep}{bat}% ({charge})")
+        update_field(self.txt_network, f"网络:{sep}{net_type} ({band})" if band else f"网络:{sep}{net_type}")
+        update_field(self.txt_wan_ip, f"WAN IP:{sep}{res.get('wan_ipaddr', '未分配')}")
         
         try:
             conn_time = int(res.get("realtime_time", 0))
             hours, rem = divmod(conn_time, 3600)
             minutes, seconds = divmod(rem, 60)
-            self.txt_conn_time.value = f"连接时长:{sep}{hours:02d}:{minutes:02d}:{seconds:02d}"
+            time_str = f"连接时长:{sep}{hours:02d}:{minutes:02d}:{seconds:02d}"
         except Exception:
-            self.txt_conn_time.value = f"连接时长:{sep}--"
+            time_str = f"连接时长:{sep}--"
+        update_field(self.txt_conn_time, time_str)
 
         # 流量与设备信息
-        self.txt_tx_speed.value = f"上传速度:{sep}{format_bytes(res.get('realtime_tx_thrpt', 0))}/s"
-        self.txt_rx_speed.value = f"下载速度:{sep}{format_bytes(res.get('realtime_rx_thrpt', 0))}/s"
+        update_field(self.txt_tx_speed, f"上传速度:{sep}{format_bytes(res.get('realtime_tx_thrpt', 0))}/s")
+        update_field(self.txt_rx_speed, f"下载速度:{sep}{format_bytes(res.get('realtime_rx_thrpt', 0))}/s")
+        
         rt_total = safe_float(res.get("realtime_tx_bytes")) + safe_float(res.get("realtime_rx_bytes"))
         mo_total = safe_float(res.get("monthly_tx_bytes")) + safe_float(res.get("monthly_rx_bytes"))
-        self.txt_traffic_rt.value = f"本次流量:{sep}{format_bytes(rt_total)}"
-        self.txt_traffic_mo.value = f"当月流量:{sep}{format_bytes(mo_total)}"
+        update_field(self.txt_traffic_rt, f"本次流量:{sep}{format_bytes(rt_total)}")
+        update_field(self.txt_traffic_mo, f"当月流量:{sep}{format_bytes(mo_total)}")
         
         if macs_count is not None:
-            self.txt_users.value = f"接入设备:{sep}{macs_count} 台"
+            update_field(self.txt_users, f"接入设备:{sep}{macs_count} 台")
 
         # 射频信号参数
         freq_5g = str(res.get("nr5g_action_channel", "") or res.get("nr5g_arfcn", "") or res.get("Z5g_arfcn", "")).strip()
         freq_4g = str(res.get("wan_active_channel", "")).strip()
-        self.txt_freq.value = f"ARFCN (小区频点):{sep}{freq_5g or freq_4g or '--'}"
+        update_field(self.txt_freq, f"ARFCN (小区频点):{sep}{freq_5g or freq_4g or '--'}")
         
         #十六进制转十进制
         def parse_hex(raw):
@@ -674,23 +687,23 @@ class StatusCard(ft.Container):
         pci_4g_raw = res.get("lte_pci", "")
         display_pci_5g = parse_hex(pci_5g_raw)
         display_pci_4g = parse_hex(pci_4g_raw)
-        self.txt_pci.value = f"PCI (物理小区标识):{sep}{display_pci_5g or display_pci_4g or '--'}"
+        update_field(self.txt_pci, f"PCI (物理小区标识):{sep}{display_pci_5g or display_pci_4g or '--'}")
 
         rsrp_5g = str(res.get('Z5g_rsrp', '') or res.get('nr5g_rsrp', '')).strip()
         rsrp_4g = str(res.get('lte_rsrp', '')).strip()
-        self.txt_rsrp.value = f"RSRP (信号强度):{sep}{rsrp_5g or rsrp_4g or '--'} dBm"
+        update_field(self.txt_rsrp, f"RSRP (信号强度):{sep}{rsrp_5g or rsrp_4g or '--'} dBm")
 
         rsrq_5g = str(res.get('Z5g_rsrq', '') or res.get('nr5g_rsrq', '')).strip()
         rsrq_4g = str(res.get('lte_rsrq', '')).strip()
-        self.txt_rsrq.value = f"RSRQ (信号质量):{sep}{rsrq_5g or rsrq_4g or '--'} dB"
+        update_field(self.txt_rsrq, f"RSRQ (信号质量):{sep}{rsrq_5g or rsrq_4g or '--'} dB")
 
         sinr_5g = str(res.get('Z5g_SINR', '') or res.get('Z5g_sinr', '') or res.get('nr5g_sinr', '')).strip()
         sinr_4g = str(res.get('lte_snr', '') or res.get('lte_sinr', '')).strip()
-        self.txt_sinr.value = f"SINR (信噪比):{sep}{sinr_5g or sinr_4g or '--'} dB"
+        update_field(self.txt_sinr, f"SINR (信噪比):{sep}{sinr_5g or sinr_4g or '--'} dB")
 
         rssi_5g = str(res.get('Z5g_rssi', '') or res.get('nr5g_rssi', '')).strip()
         rssi_4g = str(res.get('lte_rssi', '')).strip()
-        self.txt_rssi.value = f"RSSI (接收总功率):{sep}{rssi_5g or rssi_4g or '--'} dBm"
+        update_field(self.txt_rssi, f"RSSI (接收总功率):{sep}{rssi_5g or rssi_4g or '--'} dBm")
 
         # 核心解算 eCellID (小区编号)
         raw_5g_val = str(res.get("nr5g_cell_id", "")).strip()
@@ -717,44 +730,41 @@ class StatusCard(ft.Container):
                 is_14bit_provider = True
 
         nr_cell_bits = 14 if is_14bit_provider else 12
-        net_type_upper = str(res.get('network_type', '')).upper()
-        is_5g = any(k in net_type_upper for k in ['5G', 'SA', 'NSA'])
+        ecellid_str = f"eCellID (小区编号):{sep}--"
 
         # 解算输出 eCellID (小区编号)
         if is_5g and raw_5g_val and raw_5g_val != "0":
             dec_val = parse_cell_id(raw_5g_val)
-            # dec_val <= 0 统一视为无效：包含空串返0、解析失败返-1、真实值为0三种情况
             if dec_val > 0:
                 MAX_NCI = (1 << 36) - 1
-                # 强行截取低36位作为 NCI，过滤掉 PLMN 前缀的 NCGI 长数值
                 nci_val = dec_val & MAX_NCI 
                 gnb_id = nci_val >> nr_cell_bits
                 cell_id = nci_val & ((1 << nr_cell_bits) - 1)
-                self.txt_ecellid.value = f"eCellID (小区编号):{sep}{gnb_id}-{cell_id}"
+                ecellid_str = f"eCellID (小区编号):{sep}{gnb_id}-{cell_id}"
             else:
-                # 解析失败或值无效，显示原始文本
-                self.txt_ecellid.value = f"eCellID (小区编号):{sep}{raw_5g_val}"
+                ecellid_str = f"eCellID (小区编号):{sep}{raw_5g_val}"
         else:
             if raw_4g_val and raw_4g_val != "0":
                 ecell_dec = parse_cell_id(raw_4g_val)
                 if ecell_dec > 0:
                     MAX_ECI = (1 << 28) - 1
-                    # 强行截取低28位作为 ECI，过滤掉 PLMN 前缀的 CGI 长数值
                     eci_val = ecell_dec & MAX_ECI
                     enb_id = eci_val >> 8
                     local_cell = eci_val & 0xFF
-                    self.txt_ecellid.value = f"eCellID (小区编号):{sep}{enb_id}-{local_cell}"
+                    ecellid_str = f"eCellID (小区编号):{sep}{enb_id}-{local_cell}"
                 else:
-                    self.txt_ecellid.value = f"eCellID (小区编号):{sep}{raw_4g_val}"
-            else:
-                self.txt_ecellid.value = f"eCellID (小区编号):{sep}--"
+                    ecellid_str = f"eCellID (小区编号):{sep}{raw_4g_val}"
+        
+        update_field(self.txt_ecellid, ecellid_str)
 
         # 温度信息
-        self.txt_temp_bat.value = f"电池温度:{sep}{res.get('battery_temp', '--')}℃"
-        self.txt_temp_mdm.value = f"4G Modem:{sep}{res.get('pm_sensor_mdm', '--')}℃"
-        self.txt_temp_pa.value = f"PA:{sep}{res.get('pm_sensor_pa1', '--')}℃"
+        update_field(self.txt_temp_bat, f"电池温度:{sep}{res.get('battery_temp', '--')}℃")
+        update_field(self.txt_temp_mdm, f"4G Modem:{sep}{res.get('pm_sensor_mdm', '--')}℃")
+        update_field(self.txt_temp_pa, f"PA:{sep}{res.get('pm_sensor_pa1', '--')}℃")
         
-        self.update()
+        # 只有当存在实际变化的字段时，才向前端发送 RPC 更新指令
+        if has_changes:
+            self.update()
 
 # ==========================================
 # UI 组件拆分 - 定时重启卡片
@@ -783,22 +793,34 @@ class RebootCard(ft.Container):
             label_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
         )
         
+        # 不再使用 expand，依赖 ResponsiveRow 的栅格系统来控制宽度
         self.rb_time_hr = ft.TextField(
-            label="时", expand=1, value="02", input_filter=ft.NumbersOnlyInputFilter(),
+            label="时", value="02", input_filter=ft.NumbersOnlyInputFilter(),
             color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style,
             border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
         )
         self.rb_time_min = ft.TextField(
-            label="分", expand=1, value="00", input_filter=ft.NumbersOnlyInputFilter(),
+            label="分", value="00", input_filter=ft.NumbersOnlyInputFilter(),
             color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style,
             border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
         )
         self.rb_buffer = ft.TextField(
-            label="缓冲时间", expand=1, value="02", input_filter=ft.NumbersOnlyInputFilter(),
+            label="缓冲时间", value="02", input_filter=ft.NumbersOnlyInputFilter(),
             color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style,
             border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
         )
         
+        # 采用 ResponsiveRow，小屏(sm)占据12格(独占一行)，中屏(md)占据4格(三分之一宽)
+        self.time_container = ft.ResponsiveRow(
+            controls=[
+                ft.Container(self.rb_time_hr, col={"sm": 12, "md": 4}),
+                ft.Container(self.rb_time_min, col={"sm": 12, "md": 4}),
+                ft.Container(self.rb_buffer, col={"sm": 12, "md": 4}),
+            ],
+            spacing=5,
+            run_spacing=5
+        )
+
         self.week_cbs = [
             ft.Checkbox(
                 label=w, value=False, data=str(i+1), on_change=self.on_week_change,
@@ -815,31 +837,6 @@ class RebootCard(ft.Container):
         )
         self.btn_save_reboot = create_button("保存重启规则", on_click=self.on_save_reboot)
         
-        # 创建一个用来动态切换排版的容器
-        self.colon = ft.Text(":", size=20, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN)
-        self.time_container = ft.Container()
-        
-        # 判断屏幕大小
-        is_small = page.width < 340 if page.width > 0 else False 
-        
-        # 如果是小屏，直接让它竖着排 (Column)
-        if is_small:
-            self.time_container.content = ft.Column(
-                [self.rb_time_hr, self.rb_time_min, self.rb_buffer],
-                spacing=5
-            )
-            # 关掉横向自动拉伸，防止在小屏幕上变形
-            self.rb_time_hr.expand = False
-            self.rb_time_min.expand = False
-            self.rb_buffer.expand = False
-            
-        # 3. 如果是大屏，就正常横着排 (Row)
-        else:
-            self.time_container.content = ft.Row(
-                [self.rb_time_hr, self.rb_time_min, self.rb_buffer], 
-                spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER
-            )
-
         row_weeks = ft.Row(controls=[ft.Container(content=cb, width=75, padding=0, margin=0) for cb in self.week_cbs], wrap=True, spacing=10, run_spacing=5)
 
         self.content = ft.Column([
@@ -848,7 +845,7 @@ class RebootCard(ft.Container):
             ft.Row([self.reboot_enable, ft.Text("定时重启", color=ColorConfig.SWITCH_LABEL)], vertical_alignment=ft.CrossAxisAlignment.CENTER), 
             self.reboot_hint, 
             
-            self.time_container,  # 动态容器
+            self.time_container,  # 响应式容器
             
             self.reboot_mode,
             ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
@@ -1031,27 +1028,32 @@ class SettingsCard(ft.Container):
         btn_nsa_apply = create_button("应用 5G NSA 锁频段", on_click=self.on_apply_nsa)
         
         # 锁小区表单
+        # 统一加上 expand=True，强制它们撑满容器宽度以保证右侧对齐
         self.cell_pci = ft.TextField(expand=True, color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR, input_filter=ft.NumbersOnlyInputFilter())
         self.cell_earfcn = ft.TextField(expand=True, color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR, input_filter=ft.NumbersOnlyInputFilter())
         self.cell_band = ft.Dropdown(expand=True, options=[ft.dropdown.Option(b, str(b)) for b in ["1", "3", "28", "41", "78"]], value="1", color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR)
         self.cell_scs = ft.Dropdown(expand=True, options=[ft.dropdown.Option(s, f"{s}KHz") for s in ["15", "30", "60"]], value="15", color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR)
-        # 动态标签：锁小区显示 (大屏使用)
-        self.lbl_pci_side = ft.Text("PCI", color=ColorConfig.TEXT_MAIN, width=LABEL_W)
-        self.lbl_earfcn_side = ft.Text("ARFCN", color=ColorConfig.TEXT_MAIN, width=LABEL_W)
-        self.lbl_band_side = ft.Text("BAND", color=ColorConfig.TEXT_MAIN, width=LABEL_W)
-        self.lbl_scs_side = ft.Text("SCS", color=ColorConfig.TEXT_MAIN, width=LABEL_W)
 
-        # 动态标签：锁小区显示 (小屏使用)
-        self.lbl_pci_top = ft.Text("PCI", color=ColorConfig.TEXT_MAIN, visible=False)
-        self.lbl_earfcn_top = ft.Text("ARFCN", color=ColorConfig.TEXT_MAIN, visible=False)
-        self.lbl_band_top = ft.Text("BAND", color=ColorConfig.TEXT_MAIN, visible=False)
-        self.lbl_scs_top = ft.Text("SCS", color=ColorConfig.TEXT_MAIN, visible=False)
+        # 采用 ResponsiveRow 自动处理排版：小屏标签居上(折行)，中屏标签居左(同一行)
+        def create_responsive_field(label_text: str, control: ft.Control) -> ft.ResponsiveRow:
+            return ft.ResponsiveRow(
+                controls=[
+                    ft.Container(
+                        ft.Text(label_text, color=ColorConfig.TEXT_MAIN), 
+                        col={"sm": 12, "md": 3},
+                        alignment=ft.Alignment.CENTER_LEFT,
+                    ),
+                    ft.Container(control, col={"sm": 12, "md": 9})
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=5, run_spacing=2
+            )
 
-        # 构建支持动态切换的结构：外层是列 (Column)，内层是行 (Row)
-        row_pci = ft.Column([self.lbl_pci_top, ft.Row([self.lbl_pci_side, self.cell_pci], spacing=10)], spacing=2)
-        row_earfcn = ft.Column([self.lbl_earfcn_top, ft.Row([self.lbl_earfcn_side, self.cell_earfcn], spacing=10)], spacing=2)
-        row_band = ft.Column([self.lbl_band_top, ft.Row([self.lbl_band_side, self.cell_band], spacing=10)], spacing=2)
-        row_scs = ft.Column([self.lbl_scs_top, ft.Row([self.lbl_scs_side, self.cell_scs], spacing=10)], spacing=2)
+        row_pci = create_responsive_field("PCI", self.cell_pci)
+        row_earfcn = create_responsive_field("ARFCN", self.cell_earfcn)
+        row_band = create_responsive_field("BAND", self.cell_band)
+        row_scs = create_responsive_field("SCS", self.cell_scs)
+        
         cell_tip = ft.Text("设备重启后生效", size=13, color=ColorConfig.TEXT_SEC, text_align=ft.TextAlign.CENTER)
         
         btn_cell_apply = create_button("应用锁小区", on_click=self.on_cell_lock)
@@ -1323,82 +1325,147 @@ class SettingsCard(ft.Container):
         self.update()
 
 # ==========================================
-# 主程序：UI 构建 + 业务逻辑
+# 主程序：应用类封装 (面向对象重构版)
 # ==========================================
-# Flet 应用主入口，负责页面初始化、状态管理、UI 构建与事件绑定
-async def main(page: ft.Page):
-    logger.info("应用启动，初始化主页面")
-    # 页面基础设置
-    page.theme = ft.Theme(font_family="Source Han Sans SC, Noto Sans SC, Microsoft YaHei, sans-serif")
-    page.title = "MU5001"
-    page.padding = 0
-    page.theme_mode = ft.ThemeMode.DARK
-    page.bgcolor = ColorConfig.BG_COLOR
-    # 全局状态
-    device_state = DeviceState()
-    client = MU5001Client(device_state)
-
-    # 使用 SharedPreferences 加载方案
-    prefs = None
-    try:
-        prefs = ft.SharedPreferences()
-    except Exception as e:
-        logger.warning(f"SharedPreferences 初始化失败: {e}")
+class MU5001:
+    def __init__(self, page: ft.Page):
+        self.page = page
+        logger.info("应用启动，初始化主页面")
         
-    auto_refresh_task: Optional[asyncio.Task] = None
+        # 1. 页面基础设置
+        self.page.theme = ft.Theme(font_family="Source Han Sans SC, Noto Sans SC, Microsoft YaHei, sans-serif")
+        self.page.title = "MU5001"
+        self.page.padding = 0
+        self.page.theme_mode = ft.ThemeMode.DARK
+        self.page.bgcolor = ColorConfig.BG_COLOR
+        
+        # 2. 全局状态初始化
+        self.device_state = DeviceState()
+        self.client = MU5001Client(self.device_state)
+        self.auto_refresh_task: Optional[asyncio.Task] = None
+        self.is_refreshing = False
+        self.current_is_small = None
+        self.prefs = None
 
-    # 操作事件：设备重启（传递给相关组件）
-    async def on_reboot_device(e):
-        show_toast(page, "正在发送重启指令...", True)
+    async def start(self):
+        # 尝试初始化本地存储
         try:
-            if await client.post_cmd("REBOOT_DEVICE"):
-                status_card.set_global_status("重启指令已发送，设备即将重启", ColorConfig.ACCENT_COLOR)
-                show_toast(page, "设备即将重启", True)
-            else:
-                status_card.set_global_status("重启失败", ColorConfig.ERROR_COLOR)
-                show_toast(page, "设备重启失败", False)
-        except Exception:
-            status_card.set_global_status("重启失败", ColorConfig.ERROR_COLOR)
-            show_toast(page, "设备重启失败", False)
+            self.prefs = ft.SharedPreferences()
+        except Exception as e:
+            logger.warning(f"SharedPreferences 初始化失败: {e}")
 
-    # 初始化 UI 组件
-    login_view = LoginView(page, client, prefs, on_login_success=lambda: on_login_success_handler())
-    status_card = StatusCard()
-    reboot_card = RebootCard(page, client, set_global_status_cb=status_card.set_global_status)
-    settings_card = SettingsCard(page, client, set_global_status_cb=status_card.set_global_status, on_reboot_cb=on_reboot_device)
-    
-    # 自动刷新任务
-    # 启动后台自动刷新任务，保证单例运行
-    def start_auto_refresh():
-        nonlocal auto_refresh_task
-        if auto_refresh_task and not auto_refresh_task.done():
-            auto_refresh_task.cancel()
-        is_refreshing = False
-        async def worker():
-            nonlocal is_refreshing
-            try:
-                while True:
-                    await asyncio.sleep(AUTO_REFRESH_INTERVAL)
-                    if not (device_state.client and main_view.visible):
-                        continue
-                    if is_refreshing:
-                        continue
-                    is_refreshing = True
-                    try:
-                        await fetch_realtime()
-                    except Exception as e:
-                        logger.debug(f"后台刷新异常: {e}")
-                    finally:
-                        is_refreshing = False
-            except asyncio.CancelledError:
-                logger.info("自动刷新任务已停止")
-        auto_refresh_task = asyncio.create_task(worker())
+        # 实例化各个 UI 业务组件
+        self.login_view = LoginView(self.page, self.client, self.prefs, on_login_success=self.on_login_success)
+        self.status_card = StatusCard()
+        self.reboot_card = RebootCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
+        self.settings_card = SettingsCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status, on_reboot_cb=self.on_reboot_device)
+
+        # 构建主视图布局
+        self.build_main_view()
+
+        # 绑定页面全局事件
+        self.page.on_resize = self.on_page_resize
+        self.page.on_disconnect = self.on_disconnect
+
+        # 挂载到页面并初始化排版
+        self.page.add(self.login_view, self.main_view)
+        if self.page.width > 0:
+            self.on_page_resize(None)
+        self.page.update()
+
+        # 读取存储并尝试自动登录
+        await self.login_view.init_from_storage()
+
+    def build_main_view(self):
+        # 顶部吸顶操作区
+        self.logout_btn = create_button("退出", on_click=self.do_logout, height=36)
+        self.logout_btn.style.bgcolor = ColorConfig.TOP_BTN_BG
+        self.logout_btn.style.color = ColorConfig.TOP_BTN_TEXT
+        
+        self.relogin_btn = create_button("重登", on_click=self.do_relogin, height=36)
+        self.relogin_btn.style.bgcolor = ColorConfig.TOP_BTN_BG
+        self.relogin_btn.style.color = ColorConfig.TOP_BTN_TEXT
+
+        self.header_text = ft.Text(
+            "设备状态", size=20, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, 
+            expand=True, color=ColorConfig.TEXT_MAIN, no_wrap=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS
+        )
+
+        self.sticky_header = ft.Container(
+            content=ft.Row([self.logout_btn, self.header_text, self.relogin_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        )
+
+        # 中部滚动控制区
+        btn_refresh = create_button("刷新数据", on_click=self.refresh_all, expand=True)
+        btn_reboot_top = create_button("重启设备", on_click=self.on_reboot_device, expand=True)
+
+        scrollable_content = ft.Column(
+            [
+                self.status_card,
+                ft.Row([btn_refresh, btn_reboot_top], spacing=10),
+                ft.Container(height=10),
+                self.reboot_card,
+                ft.Container(height=10),
+                self.settings_card,
+                ft.Container(height=30)
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH, scroll=ft.ScrollMode.AUTO, expand=True 
+        )
+
+        self.top_spacer = ft.Container(height=25)
+        self.header_gap = ft.Container(height=10)
+
+        # 组装整体主视图
+        self.main_view = ft.Container(
+            padding=15, expand=True, visible=False,
+            content=ft.Column(
+                [self.top_spacer, self.sticky_header, self.header_gap, scrollable_content],
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH, spacing=0, expand=True 
+            )
+        )
+
+    # ---------------- 业务交互与任务调度 ---------------- #
+    async def on_reboot_device(self, e=None):
+        show_toast(self.page, "正在发送重启指令...", True)
+        try:
+            if await self.client.post_cmd("REBOOT_DEVICE"):
+                self.status_card.set_global_status("重启指令已发送，设备即将重启", ColorConfig.ACCENT_COLOR)
+                show_toast(self.page, "设备即将重启", True)
+            else:
+                self.status_card.set_global_status("重启失败", ColorConfig.ERROR_COLOR)
+                show_toast(self.page, "设备重启失败", False)
+        except Exception:
+            self.status_card.set_global_status("重启失败", ColorConfig.ERROR_COLOR)
+            show_toast(self.page, "设备重启失败", False)
+
+    def start_auto_refresh(self):
+        if self.auto_refresh_task and not self.auto_refresh_task.done():
+            self.auto_refresh_task.cancel()
+        self.is_refreshing = False
+        self.auto_refresh_task = asyncio.create_task(self._refresh_worker())
         logger.info("自动刷新任务已启动")
 
-    # 数据读取（异步） 
-    # 拉取实时运行状态并更新 UI
-    async def fetch_realtime():
-        if not device_state.client:
+    async def _refresh_worker(self):
+        try:
+            while True:
+                await asyncio.sleep(AUTO_REFRESH_INTERVAL)
+                # 只有客户端在线且主界面显示时才刷新
+                if not (self.device_state.client and self.main_view.visible):
+                    continue
+                if self.is_refreshing:
+                    continue
+                self.is_refreshing = True
+                try:
+                    await self.fetch_realtime()
+                except Exception as e:
+                    logger.debug(f"后台刷新异常: {e}")
+                finally:
+                    self.is_refreshing = False
+        except asyncio.CancelledError:
+            logger.info("自动刷新任务已停止")
+
+    async def fetch_realtime(self):
+        if not self.device_state.client:
             return
         try:
             cmd = (
@@ -1410,13 +1477,12 @@ async def main(page: ft.Page):
                 "nr5g_cell_id,network_provider,realtime_time,lte_rsrq,Z5g_rsrq,lte_rssi,"
                 "Z5g_rssi,nr5g_rssi,ppp_status"
             )
-            res = await client.get_cmd(cmd, multi_data=True)
+            res = await self.client.get_cmd(cmd, multi_data=True)
             
-            # 接入设备数（MAC 去重）
             macs_count = None
             try:
-                wifi_res = await client.get_cmd("station_list")
-                lan_res = await client.get_cmd("lan_station_list")
+                wifi_res = await self.client.get_cmd("station_list")
+                lan_res = await self.client.get_cmd("lan_station_list")
                 macs = {
                     d.get("mac_addr", "").strip().upper()
                     for d in wifi_res.get("station_list", []) + lan_res.get("lan_station_list", [])
@@ -1426,346 +1492,141 @@ async def main(page: ft.Page):
             except Exception:
                 pass
 
-            reboot_card.update_time_display()
-            status_card.update_realtime(res, macs_count)
-            settings_card.update_realtime(res)
+            self.reboot_card.update_time_display()
+            self.status_card.update_realtime(res, macs_count)
+            self.settings_card.update_realtime(res)
         except Exception as e:
             logger.debug(f"实时刷新异常: {e}")
 
-    # 全量读取设备配置并同步到 UI
-    async def refresh_all(e=None):
-        if not device_state.client:
+    async def refresh_all(self, e=None):
+        if not self.device_state.client:
             return
-        status_card.set_global_status("正在读取设备信息...", ColorConfig.TEXT_MAIN)
+        self.status_card.set_global_status("正在读取设备信息...", ColorConfig.TEXT_MAIN)
         try:
             cmd = (
                 "sysIdleTimeToSleep,lte_band_lock,nr5g_sa_band_lock,nr5g_nsa_band_lock,"
                 "nr5g_cell_lock,reboot_schedule_enable,reboot_schedule_mode,reboot_hour1,"
                 "reboot_min1,reboot_timeframe_hours1,reboot_dow,reboot_dod"
             )
-            res = await client.get_cmd(cmd, multi_data=True)
-            sa_res = await client.get_cmd("nr5g_sa_band_lock")
-            nsa_res = await client.get_cmd("nr5g_nsa_band_lock")
-            net_res = await client.get_cmd(API_KEY_READ)
+            res = await self.client.get_cmd(cmd, multi_data=True)
+            sa_res = await self.client.get_cmd("nr5g_sa_band_lock")
+            nsa_res = await self.client.get_cmd("nr5g_nsa_band_lock")
+            net_res = await self.client.get_cmd(API_KEY_READ)
             current_net_mode = str(net_res.get(API_KEY_READ, "")).strip().upper()
-            # 将数据分发给各个组件进行状态更新
-            reboot_card.update_config(res)
-            settings_card.update_config(
-                res, 
-                sa_res.get("nr5g_sa_band_lock", ""), 
-                nsa_res.get("nr5g_nsa_band_lock", ""), 
-                current_net_mode
+            
+            self.reboot_card.update_config(res)
+            self.settings_card.update_config(
+                res, sa_res.get("nr5g_sa_band_lock", ""), nsa_res.get("nr5g_nsa_band_lock", ""), current_net_mode
             )
-            # 状态提示
-            dev_status = " | 开发者已解锁" if device_state.dev_unlocked else " | 开发者未解锁"
-            status_card.set_global_status("数据读取成功" + dev_status, ColorConfig.ACCENT_COLOR if device_state.dev_unlocked else ColorConfig.ERROR_COLOR)
-            await fetch_realtime()
+            
+            dev_status = " | 开发者已解锁" if self.device_state.dev_unlocked else " | 开发者未解锁"
+            self.status_card.set_global_status("数据读取成功" + dev_status, ColorConfig.ACCENT_COLOR if self.device_state.dev_unlocked else ColorConfig.ERROR_COLOR)
+            
+            await self.fetch_realtime()
             if e:
-                show_toast(page, "数据刷新成功", True)
+                show_toast(self.page, "数据刷新成功", True)
             logger.info("全量配置刷新完成")
         except Exception:
-            status_card.set_global_status("读取失败，请检查连接", ColorConfig.ERROR_COLOR)
+            self.status_card.set_global_status("读取失败，请检查连接", ColorConfig.ERROR_COLOR)
             if e:
-                show_toast(page, "数据读取失败，请检查连接", False)
+                show_toast(self.page, "数据读取失败，请检查连接", False)
 
-    # 核心操作执行逻辑（登录/退出/刷新）
-    async def on_login_success_handler():
-        login_view.visible = False
-        main_view.visible = True
-        page.update()
-        await refresh_all()
-        start_auto_refresh()
+    async def on_login_success(self):
+        self.login_view.visible = False
+        self.main_view.visible = True
+        self.page.update()
+        await self.refresh_all()
+        self.start_auto_refresh()
 
-    async def do_relogin(e):
-        if not device_state.ip or not device_state.password:
-            show_toast(page, "本地无缓存密码，请重启 APP", False)
+    async def do_relogin(self, e=None):
+        if not self.device_state.ip or not self.device_state.password:
+            show_toast(self.page, "本地无缓存密码，请重启 APP", False)
             return
-        show_toast(page, "正在重登...", True)
+        show_toast(self.page, "正在重登...", True)
         try:
-            success = await client.login(device_state.ip, device_state.password)
+            success = await self.client.login(self.device_state.ip, self.device_state.password)
             if success:
-                dev_ok = await client.unlock_developer()
-                
-                # 重登成功后，默认发送打开数据连接指令
+                dev_ok = await self.client.unlock_developer()
                 try:
-                    await client.post_cmd("CONNECT_NETWORK", {"notCallback": "true"})
-                    settings_card.data_switch.value = True
-                    settings_card.update()
+                    await self.client.post_cmd("CONNECT_NETWORK", {"notCallback": "true"})
+                    self.settings_card.data_switch.value = True
+                    self.settings_card.update()
                 except Exception as conn_err:
                     logger.warning(f"重登后自动开启数据连接失败: {conn_err}")
-                # ======================================================
 
                 if dev_ok:
-                    status_card.set_global_status("重登成功并已解锁开发者权限", ColorConfig.ACCENT_COLOR)
-                    show_toast(page, "重登成功，开发者解锁成功，已尝试开启数据", True)
+                    self.status_card.set_global_status("重登成功并已解锁开发者权限", ColorConfig.ACCENT_COLOR)
+                    show_toast(self.page, "重登成功，开发者解锁成功，已尝试开启数据", True)
                 else:
-                    status_card.set_global_status("重登成功，开发者解锁失败", ColorConfig.ERROR_COLOR)
-                    show_toast(page, "重登成功，但开发者解锁失败", False)
-                await refresh_all()
+                    self.status_card.set_global_status("重登成功，开发者解锁失败", ColorConfig.ERROR_COLOR)
+                    show_toast(self.page, "重登成功，但开发者解锁失败", False)
+                await self.refresh_all()
             else:
-                status_card.set_global_status("重新登录失败，可能密码已修改或被锁定", ColorConfig.ERROR_COLOR)
-                show_toast(page, "重登失败", False)
+                self.status_card.set_global_status("重新登录失败，可能密码已修改或被锁定", ColorConfig.ERROR_COLOR)
+                show_toast(self.page, "重登失败", False)
         except Exception:
-            status_card.set_global_status("重登连接失败，请检查网络", ColorConfig.ERROR_COLOR)
-            show_toast(page, "连接失败，请检查网络", False)
+            self.status_card.set_global_status("重登连接失败，请检查网络", ColorConfig.ERROR_COLOR)
+            show_toast(self.page, "连接失败，请检查网络", False)
 
-    async def do_logout(e):
-        await client.close()
-        nonlocal auto_refresh_task
-        if auto_refresh_task and not auto_refresh_task.done():
-            auto_refresh_task.cancel()
-            auto_refresh_task = None
-        device_state.dev_unlocked = False
-        await login_view.clear_credentials_and_reset()
-        main_view.visible = False
-        login_view.visible = True
-        show_toast(page, "已安全退出登录", True)
-        page.update()
+    async def do_logout(self, e=None):
+        await self.client.close()
+        if self.auto_refresh_task and not self.auto_refresh_task.done():
+            self.auto_refresh_task.cancel()
+            self.auto_refresh_task = None
+        self.device_state.dev_unlocked = False
+        await self.login_view.clear_credentials_and_reset()
+        self.main_view.visible = False
+        self.login_view.visible = True
+        show_toast(self.page, "已安全退出登录", True)
+        self.page.update()
 
-    # ==========================================
-    # 主视图 (吸顶布局) 
-    # ==========================================
-    logout_btn = create_button("退出", on_click=do_logout, height=36)
-    logout_btn.style.bgcolor = ColorConfig.TOP_BTN_BG
-    logout_btn.style.color = ColorConfig.TOP_BTN_TEXT
-    
-    relogin_btn = create_button("重登", on_click=do_relogin, height=36)
-    relogin_btn.style.bgcolor = ColorConfig.TOP_BTN_BG
-    relogin_btn.style.color = ColorConfig.TOP_BTN_TEXT
-
-    header_text = ft.Text(
-        "设备状态", 
-        size=20, 
-        weight=ft.FontWeight.BOLD, 
-        text_align=ft.TextAlign.CENTER, 
-        expand=True, 
-        color=ColorConfig.TEXT_MAIN,
-        no_wrap=True,                     
-        max_lines=1,                      
-        overflow=ft.TextOverflow.ELLIPSIS 
-    )
-
-    sticky_header = ft.Container(
-        content=ft.Row(
-            [logout_btn, header_text, relogin_btn],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER
-        )
-    )
-
-    btn_refresh = create_button("刷新数据", on_click=refresh_all, expand=True)
-    btn_reboot_top = create_button("重启设备", on_click=on_reboot_device, expand=True)
-
-    # 可滑动的内容区域
-    scrollable_content = ft.Column(
-        [
-            status_card,
-            ft.Row([btn_refresh, btn_reboot_top], spacing=10),
-            ft.Container(height=10),
-            reboot_card,
-            ft.Container(height=10),
-            settings_card,
-            ft.Container(height=30)
-        ],
-        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-        scroll=ft.ScrollMode.AUTO,
-        expand=True 
-    )
-
-    # 提取占位容器为变量，方便后续暴力压缩
-    top_spacer = ft.Container(height=25)
-    header_gap = ft.Container(height=10)
-
-    main_view = ft.Container(
-        padding=15,  
-        expand=True,
-        visible=False,
-        content=ft.Column(
-            [
-                top_spacer,              
-                sticky_header,           
-                header_gap,
-                scrollable_content       
-            ],
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-            spacing=0,
-            expand=True 
-        )
-    )
-
-    # ==========================================
-    # 全局响应式缩放方案
-    # ==========================================
-    _orig_states = {}
-
-    def on_page_resize(e):
-        if page.width <= 0: 
+    def on_page_resize(self, e=None):
+        if self.page.width <= 0: 
             return
 
-        #缩放临界值 340dp
-        is_small = page.width < 340
-        
-        # 小屏状态同步给 StatusCard
-        status_card.is_small = is_small
-        
-        # 缩放基准调整为 360dp
-        scale = max(0.6, page.width / 360) if is_small else 1.0
-
-        def scale_node(ctrl):
-            if not ctrl: return
+        is_small = self.page.width < 340
+        if self.current_is_small == is_small:
+            return
             
-            cid = id(ctrl)
-            if cid not in _orig_states:
-                _orig_states[cid] = {}
-            state = _orig_states[cid]
-
-            # 1. 纯文本
-            if isinstance(ctrl, ft.Text):
-                if "size" not in state: state["size"] = ctrl.size or 14
-                ctrl.size = max(11, int(state["size"] * scale))
-
-            # 2. 输入框和下拉菜单
-            elif isinstance(ctrl, (ft.TextField, ft.Dropdown)):
-                if "text_size" not in state: state["text_size"] = ctrl.text_size or 14
-                ctrl.text_size = int(state["text_size"] * scale)
-                
-                if hasattr(ctrl, "label_style") and ctrl.label_style:
-                    lid = id(ctrl.label_style)
-                    if lid not in _orig_states: _orig_states[lid] = {"size": ctrl.label_style.size or 14}
-                    ctrl.label_style.size = max(10, int(_orig_states[lid]["size"] * scale))
-                
-                # 动态简化标签，防止拥挤
-                if getattr(ctrl, "label", "") in ["缓冲时间", "缓冲"]:
-                    # 只有宽度小于 340 才简化为"缓冲"，实机保持"缓冲时间"
-                    ctrl.label = "缓冲" if is_small else "缓冲时间"
-                    
-                ctrl.content_padding = None 
-
-            # 3. 按钮
-            elif type(ctrl).__name__ in ["Button", "ElevatedButton"]:
-                if not ctrl.style: ctrl.style = ft.ButtonStyle()
-                if not ctrl.style.text_style: ctrl.style.text_style = ft.TextStyle()
-                
-                if "btn_text_size" not in state: state["btn_text_size"] = ctrl.style.text_style.size or 14
-                if "height" not in state: state["height"] = ctrl.height
-                
-                ctrl.style.text_style.size = max(12, int(state["btn_text_size"] * scale))
-                ctrl.style.padding = None 
-                
-                if state["height"]:
-                    ctrl.height = max(36, int(state["height"] * scale)) if is_small else state["height"]
-
-            # 4. 单选框和开关
-            elif isinstance(ctrl, (ft.Checkbox, ft.Switch)):
-                if "scale" not in state: state["scale"] = ctrl.scale or 1.0
-                ctrl.scale = state["scale"] * scale
-
-            # 5. 容器
-            elif isinstance(ctrl, ft.Container):
-                if "padding" not in state: state["padding"] = ctrl.padding
-                if isinstance(state["padding"], (int, float)):
-                    ctrl.padding = max(4, int(state["padding"] * scale)) if is_small else state["padding"]
-                
-                if "height" not in state: state["height"] = ctrl.height
-                if isinstance(state["height"], (int, float)) and state["height"] > 0:
-                     ctrl.height = int(state["height"] * scale) if is_small else state["height"]
-
-            # 6. 排版布局
-            elif isinstance(ctrl, (ft.Row, ft.Column)):
-                if "spacing" not in state: state["spacing"] = ctrl.spacing or 10
-                ctrl.spacing = max(2, int(state["spacing"] * scale)) if is_small else state["spacing"]
-
-            # --- 递归套娃执行 ---
-            if hasattr(ctrl, "content") and ctrl.content:
-                scale_node(ctrl.content)
-            if hasattr(ctrl, "controls") and ctrl.controls:
-                for child in ctrl.controls:
-                    scale_node(child)
-
-        # 启动全局扫描
-        for view in page.controls:
-            scale_node(view)
-
-        # ==========================================================           
-        # 强制接管外围和顶部边距 
-        # ==========================================================
-        top_spacer.height = 0 if is_small else 25      
-        header_gap.height = 2 if is_small else 10      
-        main_view.padding = 2 if is_small else 15      
+        self.current_is_small = is_small
+        self.status_card.is_small = is_small
         
-        # 动态控制锁小区表单标签 (保留大屏左右，小屏上下的布局)
-        settings_card.lbl_pci_side.visible = not is_small
-        settings_card.lbl_pci_top.visible = is_small
-        settings_card.lbl_earfcn_side.visible = not is_small
-        settings_card.lbl_earfcn_top.visible = is_small
-        settings_card.lbl_band_side.visible = not is_small
-        settings_card.lbl_band_top.visible = is_small
-        settings_card.lbl_scs_side.visible = not is_small
-        settings_card.lbl_scs_top.visible = is_small
+        font_size = 12 if is_small else 14
+        self.page.theme.text_theme = ft.TextTheme(
+            body_medium=ft.TextStyle(size=font_size),
+            label_large=ft.TextStyle(size=font_size),
+        )
 
-        # ==========================================================
-        # 动态控制定时重启排版 (仅在 340 以下的情况才换行)
-        # ==========================================================
-        current_is_col = isinstance(reboot_card.time_container.content, ft.Column)
-        
-        if is_small and not current_is_col:
-            # 极限小屏 (< 340)：取消 expand，改为竖排 Column
-            reboot_card.rb_time_hr.expand = False
-            reboot_card.rb_time_min.expand = False
-            reboot_card.rb_buffer.expand = False
-            reboot_card.time_container.content = ft.Column(
-                [reboot_card.rb_time_hr, reboot_card.rb_time_min, reboot_card.rb_buffer],
-                spacing=5
-            )
-        elif not is_small and current_is_col:
-            # 正常 (>= 340)：恢复完美的横排 Row 
-            reboot_card.rb_time_hr.expand = 1
-            reboot_card.rb_time_min.expand = 1
-            reboot_card.rb_buffer.expand = 1
-            reboot_card.time_container.content = ft.Row(
-                [reboot_card.rb_time_hr, reboot_card.rb_time_min, reboot_card.rb_buffer],
-                spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER
-            )
+        self.top_spacer.height = 0 if is_small else 25      
+        self.header_gap.height = 2 if is_small else 10      
+        self.main_view.padding = 2 if is_small else 15      
 
-        # ==========================================================
-        # 顶部吸顶栏小屏时防溢出
-        # ==========================================================
         if is_small:
-            if logout_btn.style: logout_btn.style.padding = ft.Padding.symmetric(horizontal=8, vertical=0)
-            if relogin_btn.style: relogin_btn.style.padding = ft.Padding.symmetric(horizontal=8, vertical=0)
-            logout_btn.height = 26
-            relogin_btn.height = 26
-            if logout_btn.style.text_style: logout_btn.style.text_style.size = 12
-            if relogin_btn.style.text_style: relogin_btn.style.text_style.size = 12
-            header_text.visible = False if page.width < 260 else True
+            if self.logout_btn.style: self.logout_btn.style.padding = ft.Padding.symmetric(horizontal=8, vertical=0)
+            if self.relogin_btn.style: self.relogin_btn.style.padding = ft.Padding.symmetric(horizontal=8, vertical=0)
+            self.logout_btn.height = 26
+            self.relogin_btn.height = 26
+            self.header_text.visible = False if self.page.width < 260 else True
         else:
-            if logout_btn.style: logout_btn.style.padding = None
-            if relogin_btn.style: relogin_btn.style.padding = None
-            logout_btn.height = 36
-            relogin_btn.height = 36
-            if logout_btn.style.text_style: logout_btn.style.text_style.size = 14
-            if relogin_btn.style.text_style: relogin_btn.style.text_style.size = 14
-            header_text.visible = True
+            if self.logout_btn.style: self.logout_btn.style.padding = None
+            if self.relogin_btn.style: self.relogin_btn.style.padding = None
+            self.logout_btn.height = 36
+            self.relogin_btn.height = 36
+            self.header_text.visible = True
 
-        page.update()
+        self.status_card.update()
+        self.page.update()
 
-    # 绑定监听
-    page.on_resize = on_page_resize
+    def on_disconnect(self, e=None):
+        if self.auto_refresh_task and not self.auto_refresh_task.done():
+            self.auto_refresh_task.cancel()
 
-    # 监听退出事件
-    def on_disconnect(e):
-        if auto_refresh_task and not auto_refresh_task.done():
-            auto_refresh_task.cancel()
-    page.on_disconnect = on_disconnect
-
-    # 直接添加到 page 中，page 会准确计算 expand=True 的高度
-    page.add(login_view, main_view)
-    # 手动触发一次响应式排版
-    if page.width > 0:
-        on_page_resize(None)
-    page.update()
-    # 读取登录信息，尝试自动登录
-    await login_view.init_from_storage()
+# ==========================================
+# 应用运行入口
+# ==========================================
+async def main(page: ft.Page):
+    app = MU5001(page)
+    await app.start()
 
 if __name__ == "__main__":
     ft.run(main)

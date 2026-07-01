@@ -818,14 +818,30 @@ class RebootCard(ft.Container):
         # 创建一个用来动态切换排版的容器
         self.colon = ft.Text(":", size=20, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN)
         self.time_container = ft.Container()
-        # 默认使用大屏的横排布局 (Row)
-        self.time_container.content = ft.Row(
-            [self.rb_time_hr, self.rb_time_min, self.rb_buffer], 
-            spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER
-        )
+        
+        # 判断屏幕大小
+        is_small = page.width < 340 if page.width > 0 else False 
+        
+        # 如果是小屏，直接让它竖着排 (Column)
+        if is_small:
+            self.time_container.content = ft.Column(
+                [self.rb_time_hr, self.rb_time_min, self.rb_buffer],
+                spacing=5
+            )
+            # 关掉横向自动拉伸，防止在小屏幕上变形
+            self.rb_time_hr.expand = False
+            self.rb_time_min.expand = False
+            self.rb_buffer.expand = False
+            
+        # 3. 如果是大屏，就正常横着排 (Row)
+        else:
+            self.time_container.content = ft.Row(
+                [self.rb_time_hr, self.rb_time_min, self.rb_buffer], 
+                spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER
+            )
 
         row_weeks = ft.Row(controls=[ft.Container(content=cb, width=75, padding=0, margin=0) for cb in self.week_cbs], wrap=True, spacing=10, run_spacing=5)
-        
+
         self.content = ft.Column([
             ft.Text("定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
             self.txt_local_time, ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
@@ -1744,6 +1760,10 @@ async def main(page: ft.Page):
 
     # 直接添加到 page 中，page 会准确计算 expand=True 的高度
     page.add(login_view, main_view)
+    # 手动触发一次响应式排版
+    if page.width > 0:
+        on_page_resize(None)
+    page.update()
     # 读取登录信息，尝试自动登录
     await login_view.init_from_storage()
 

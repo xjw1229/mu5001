@@ -1389,6 +1389,24 @@ class MU5001:
         except Exception as e:
             logger.warning(f"SharedPreferences 初始化失败: {e}")
 
+        # 读取并应用保存的主题
+        saved_theme = "DARK"
+        if self.prefs:
+            try:
+                if hasattr(self.prefs, "get_async"):
+                    saved_theme = await self.prefs.get_async("saved_theme") or "DARK"
+                else:
+                    saved_theme = await self.prefs.get("saved_theme") or "DARK"
+            except Exception:
+                pass
+                
+        if saved_theme == "LIGHT":
+            self.page.theme_mode = ft.ThemeMode.LIGHT
+            self.page.bgcolor = ThemeColors.LIGHT_PAGE_BG
+        else:
+            self.page.theme_mode = ft.ThemeMode.DARK
+            self.page.bgcolor = ThemeColors.DARK_PAGE_BG
+
         # 实例化各个 UI 业务组件
         self.login_view = LoginView(self.page, self.client, self.prefs, on_login_success=self.on_login_success)
         self.status_card = StatusCard()
@@ -1397,6 +1415,13 @@ class MU5001:
 
         # 构建主视图布局
         self.build_main_view()
+
+        # 同步主题按钮初始图标
+        if self.page.theme_mode == ft.ThemeMode.LIGHT:
+            self.theme_btn.icon = ft.Icons.LIGHT_MODE
+        else:
+            self.theme_btn.icon = ft.Icons.DARK_MODE
+        # ---------------------------------------------
 
         # 绑定页面全局事件
         self.page.on_resize = self.on_page_resize
@@ -1489,17 +1514,31 @@ class MU5001:
             self.status_card.set_global_status("重启失败", ft.Colors.ERROR)
             show_toast(self.page, "设备重启失败", False)
 
-    # 动态切换主题函数（利用 Flet 原生引擎，告别递归）
+    # 动态切换主题函数
     async def toggle_theme(self, e):
+        target_theme = "DARK"
+        
         if self.page.theme_mode == ft.ThemeMode.DARK:
             self.page.theme_mode = ft.ThemeMode.LIGHT
             self.page.bgcolor = ThemeColors.LIGHT_PAGE_BG
             self.theme_btn.icon = ft.Icons.LIGHT_MODE
+            target_theme = "LIGHT"
         else:
             self.page.theme_mode = ft.ThemeMode.DARK
             self.page.bgcolor = ThemeColors.DARK_PAGE_BG
             self.theme_btn.icon = ft.Icons.DARK_MODE
+            target_theme = "DARK"
             
+        # 保存主题选择到本地
+        if self.prefs:
+            try:
+                if hasattr(self.prefs, "set_async"):
+                    await self.prefs.set_async("saved_theme", target_theme)
+                else:
+                    await self.prefs.set("saved_theme", target_theme)
+            except Exception as ex:
+                logger.warning(f"保存主题偏好失败: {ex}")
+                
         # 触发全局重绘
         self.page.update()
 

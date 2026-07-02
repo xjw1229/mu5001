@@ -14,7 +14,7 @@ from typing import Optional, Dict, List, Set, Callable, Union
 # 3. DEBUG_MODE 开关控制调试日志输出
 # 4. 避免重复日志刷屏
 # ==========================================
-DEBUG_MODE = False  # 调试时设为 True 或 False 可开关输出完整调试信息
+DEBUG_MODE = False # 调试时设为 True 或 False 可开关输出完整调试信息
 LOG_LEVEL = logging.DEBUG if DEBUG_MODE else logging.INFO
 logger = logging.getLogger("MU5001")
 logger.setLevel(LOG_LEVEL)
@@ -33,27 +33,48 @@ console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
 # ==========================================
-# 全局配置
+# 全局配置 (可在此处集中自定义颜色)
 # ==========================================
+class ThemeColors:
+    # 页面底色
+    DARK_PAGE_BG = "#171920"          # 深色页面主背景
+    LIGHT_PAGE_BG = "#EBE6F5"         # 浅色页面主背景
 
-# UI 全局配色方案，统一深色主题风格
-@dataclass
-class ColorConfig:
-    BG_COLOR = "#171920"          # 页面主背景
-    CARD_BG = "#40425C"           # 卡片容器背景
-    INPUT_BG = "#36394F"          # 输入框/下拉框背景
-    TEXT_MAIN = "#FFFFFF"         # 主要文字
-    TEXT_SEC = "#A1A4B0"          # 次要文字/提示文字
-    SWITCH_LABEL = "#FFF9F2"      # 开关说明文字
-    ACCENT_COLOR = "#82A5E0"      # 主题强调色
-    ERROR_COLOR = "#E08282"       # 错误、警告色
-    DIVIDER_COLOR = "#2A2C3E"     # 分割线
-    BTN_BG = "#535773"            # 普通按钮默认背景
-    BTN_HOVER_BG = "#6A6F91"      # 普通按钮悬浮背景
-    TOP_BTN_BG = "#82A5E0"        # 顶部按钮背景
-    TOP_BTN_TEXT = "#FFFFFF"      # 顶部按钮文字颜色
-    TOAST_SUCCESS_BG = "#2D4A3E"  # 成功提示背景
-    TOAST_ERROR_BG = "#5C2D2D"    # 失败提示背景
+    # 深色主题
+    DARK_SCHEME = {
+        "surface": "#40425C",                   # 卡片容器背景
+        "surface_container_highest": "#36394F", # 输入框/下拉框背景
+        "on_surface": "#FFFFFF",                # 主要文字
+        "on_surface_variant": "#C0C5D8",        # 次要文字/提示文字
+        "inverse_primary": "#FFF9F2",           # 开关说明文字
+        "primary": "#82A5E0",                   # 开关按钮/上方提示字色
+        "error": "#E08282",                     # 错误、警告色
+        "outline_variant": "#2A2C3E",           # 分割线
+        "primary_container": "#82A5E0",         # 顶部按钮背景
+        "on_primary_container": "#FFFFFF",      # 顶部按钮文字颜色
+        "secondary_container": "#535773",       # 普通按钮默认背景
+        "secondary": "#6A6F91",                 # 普通按钮悬浮背景
+        "tertiary_container": "#2D4A3E",        # 成功提示背景
+        "error_container": "#5C2D2D"            # 失败提示背景
+    }
+
+    # 浅色主题
+    LIGHT_SCHEME = {
+        "surface": "#D8E2C8",                   # 卡片容器背景
+        "surface_container_highest": "#FFF1C2", # 输入框/下拉框背景
+        "on_surface": "#000000",                # 主要文字
+        "on_surface_variant": "#4A4A4A",        # 次要文字/提示文字
+        "inverse_primary": "#1A1A1A",           # 开关说明文字
+        "primary": "#E08299",                   # 开关按钮/上方提示字色
+        "error": "#D9534F",                     # 错误、警告色
+        "outline_variant": "#E8E4D9",           # 分割线
+        "primary_container": "#FFD14D",         # 顶部按钮背景
+        "on_primary_container": "#000000",      # 顶部按钮文字颜色
+        "secondary_container": "#FFD14D",       # 普通按钮默认背景
+        "secondary": "#89C99F",                 # 普通按钮悬浮背景
+        "tertiary_container": "#70B989",        # 成功提示背景
+        "error_container": "#E89282"            # 失败提示背景
+    }
 
 # 超时与间隔配置（单位：秒）
 API_TIMEOUT = 5               # 普通 API 请求超时
@@ -80,6 +101,11 @@ NR_NSA_BANDS = ["28","41","78"]
 DEFAULT_IP = "192.168.0.1"
 API_KEY_WRITE = "BearerPreference"  # 写入网络模式的字段名
 API_KEY_READ = "net_select"         # 读取网络模式的字段名
+
+# 运营商 PLMN 常量
+CMCC_PLMNS = frozenset({"46000", "46002", "46004", "46007", "46008", "46015"})
+CU_CT_PLMNS = frozenset({"46001", "46003", "46006", "46009", "46011"})
+CMCC_KEYS = frozenset({"移动", "中国移动", "中移", "MOBILE", "CMCC", "CHINA MOBILE", "广电", "中国广电", "CBN"})
 
 # ==========================================
 # 工具函数
@@ -373,10 +399,10 @@ def create_button(
     expand: bool = False
 ) -> ft.Control:
     btn_style = ft.ButtonStyle(
-        color=ColorConfig.TEXT_MAIN,
+        color=ft.Colors.ON_SURFACE,
         bgcolor={
-            "hovered": ColorConfig.BTN_HOVER_BG,
-            "": ColorConfig.BTN_BG
+            "hovered": ft.Colors.SECONDARY,
+            "": ft.Colors.SECONDARY_CONTAINER
         },
         elevation={"": 0}
     )
@@ -387,13 +413,14 @@ def create_button(
 
 # 在页面底部弹出浮动提示条
 def show_toast(page: ft.Page, msg: str, success: bool = True) -> None:
-    bg = ColorConfig.TOAST_SUCCESS_BG if success else ColorConfig.TOAST_ERROR_BG
+    # 成功时调用 tertiary_container，失败时调用 error_container
+    bg = ft.Colors.TERTIARY_CONTAINER if success else ft.Colors.ERROR_CONTAINER
     for c in list(page.overlay):
         if isinstance(c, ft.SnackBar):
             page.overlay.remove(c)
             
     snack = ft.SnackBar(
-        content=ft.Text(msg, color=ColorConfig.TEXT_MAIN, weight=ft.FontWeight.BOLD),
+        content=ft.Text(msg, color=ft.Colors.ON_SURFACE, weight=ft.FontWeight.BOLD),
         bgcolor=bg,
         duration=3000, 
         behavior=ft.SnackBarBehavior.FLOATING
@@ -420,6 +447,18 @@ def parse_cell_id(raw_val: str) -> int:
 def normalize_plmn(raw_plmn: str) -> str:
     #标准化PLMN，去除横杠、下划线等分隔符，返回纯数字字符串
     return raw_plmn.strip().replace("-", "").replace("_", "")
+# 十六进制转十进制 (安全解析)
+def parse_hex_safe(raw):
+    raw = str(raw).strip()
+    if not raw:
+        return ""
+    try:
+        return str(int(raw, 16))
+    except ValueError:     
+        try:
+            return str(int(raw))
+        except ValueError:
+            return raw
 
 # ==========================================
 # UI 组件拆分 - 登录视图
@@ -431,32 +470,32 @@ class LoginView(ft.Container):
         self.api_client = client
         self.prefs = prefs
         self.on_login_success = on_login_success
-        self.sec_style = ft.TextStyle(color=ColorConfig.TEXT_SEC)
+        self.sec_style = ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT)
         
         self.ip_input = ft.TextField(
             label="管理地址", value=DEFAULT_IP,
-            color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
-            border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
+            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY,
             label_style=self.sec_style, hint_style=self.sec_style
         )
         self.pwd_input = ft.TextField(
             label="管理员密码", password=True, can_reveal_password=True, value="",
-            color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
-            border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR,
+            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY,
             label_style=self.sec_style, hint_style=self.sec_style
         )
         self.remember_cb = ft.Checkbox(
             label="记住密码", value=False,
-            label_style=ft.TextStyle(color=ColorConfig.TEXT_SEC),
-            fill_color={"selected": ColorConfig.ACCENT_COLOR, "": ColorConfig.BG_COLOR},
-            check_color=ColorConfig.BG_COLOR
+            label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT),
+            fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE},
+            check_color=ft.Colors.SURFACE
         )
-        self.login_status = ft.Text("输入账号密码登录", color=ColorConfig.TEXT_SEC, text_align=ft.TextAlign.CENTER)
+        self.login_status = ft.Text("输入账号密码登录", color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER)
         self.login_btn = create_button("登录", on_click=self.do_login, height=45)
         self.content = ft.Column(
             [
                 ft.Container(height=40),
-                ft.Text("MU5001", size=32, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN, text_align=ft.TextAlign.CENTER),
+                ft.Text("MU5001", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, text_align=ft.TextAlign.CENTER),
                 ft.Container(height=20),
                 self.ip_input, self.pwd_input, self.remember_cb,
                 ft.Container(height=8),
@@ -495,12 +534,12 @@ class LoginView(ft.Container):
         pwd = self.pwd_input.value
         if not pwd:
             self.login_status.value = "请输入密码"
-            self.login_status.color = ColorConfig.ERROR_COLOR
+            self.login_status.color = ft.Colors.ERROR
             self.update()
             return
         self.login_btn.disabled = True
         self.login_status.value = "正在验证登录..."
-        self.login_status.color = ColorConfig.TEXT_SEC
+        self.login_status.color = ft.Colors.ON_SURFACE_VARIANT
         self.update()
         await asyncio.sleep(0.05)
         try:
@@ -525,12 +564,12 @@ class LoginView(ft.Container):
             else:
                 await self.clear_credentials_and_reset(is_error=True)
                 self.login_status.value = "密码错误或账号锁定"
-                self.login_status.color = ColorConfig.ERROR_COLOR
+                self.login_status.color = ft.Colors.ERROR
                 show_toast(self.app_page, "密码错误或账号锁定", False)
         except Exception:
             await self.clear_credentials_and_reset(is_error=True)
             self.login_status.value = "连接失败，请检查地址和网络"
-            self.login_status.color = ColorConfig.ERROR_COLOR
+            self.login_status.color = ft.Colors.ERROR
             show_toast(self.app_page, "连接失败，请检查地址和网络", False)
         self.login_btn.disabled = False
         self.update()
@@ -553,7 +592,7 @@ class LoginView(ft.Container):
         self.ip_input.value = DEFAULT_IP
         if not is_error:
             self.login_status.value = "已退出登录，请重新验证"
-            self.login_status.color = ColorConfig.TEXT_SEC
+            self.login_status.color = ft.Colors.ON_SURFACE_VARIANT
         self.update()
 
 # ==========================================
@@ -561,49 +600,49 @@ class LoginView(ft.Container):
 # ==========================================
 class StatusCard(ft.Container):
     def __init__(self):
-        super().__init__(padding=15, bgcolor=ColorConfig.CARD_BG, border_radius=12)
+        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
         self.is_small = False  # 记录当前是否为小屏幕
-        self._last_data_hash = {}  #新增：维护每个文本控件最后一次渲染的值，用于 Diff 优化
+        self._last_data_hash = {}  # 维护每个文本控件最后一次渲染的值，用于 Diff 优化
 
         # 1. 基础网络信息
-        self.txt_provider = ft.Text("运营商: --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_battery = ft.Text("电量: --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_network = ft.Text("网络: --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_conn_time = ft.Text("连接时长: --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_wan_ip = ft.Text("WAN IP: --", size=14, color=ColorConfig.TEXT_MAIN)
+        self.txt_provider = ft.Text("运营商: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_battery = ft.Text("电量: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_network = ft.Text("网络: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_conn_time = ft.Text("连接时长: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_wan_ip = ft.Text("WAN IP: --", size=14, color=ft.Colors.ON_SURFACE)
         
         # 2. 流量与设备信息
-        self.txt_users = ft.Text("接入设备: --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_tx_speed = ft.Text("上传速度: --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_rx_speed = ft.Text("下载速度: --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_traffic_rt = ft.Text("本次流量: --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_traffic_mo = ft.Text("当月流量: --", size=14, color=ColorConfig.TEXT_MAIN)
+        self.txt_users = ft.Text("接入设备: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_tx_speed = ft.Text("上传速度: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_rx_speed = ft.Text("下载速度: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_traffic_rt = ft.Text("本次流量: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_traffic_mo = ft.Text("当月流量: --", size=14, color=ft.Colors.ON_SURFACE)
         
         # 3. 射频信息
-        self.txt_freq = ft.Text("ARFCN (小区频点): --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_pci = ft.Text("PCI (物理小区标识): --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_ecellid = ft.Text("eCellID (小区编号): --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_rsrp = ft.Text("RSRP (信号强度): --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_rsrq = ft.Text("RSRQ (信号质量): --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_sinr = ft.Text("SINR (信噪比): --", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_rssi = ft.Text("RSSI (接收总功率): --", size=14, color=ColorConfig.TEXT_MAIN)
+        self.txt_freq = ft.Text("ARFCN (小区频点): --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_pci = ft.Text("PCI (物理小区标识): --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_ecellid = ft.Text("eCellID (小区编号): --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_rsrp = ft.Text("RSRP (信号强度): --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_rsrq = ft.Text("RSRQ (信号质量): --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_sinr = ft.Text("SINR (信噪比): --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_rssi = ft.Text("RSSI (接收总功率): --", size=14, color=ft.Colors.ON_SURFACE)
         
         # 4. 温度与状态
-        self.txt_temp_bat = ft.Text("电池温度: --℃", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_temp_mdm = ft.Text("4G Modem: --℃", size=14, color=ColorConfig.TEXT_MAIN)
-        self.txt_temp_pa = ft.Text("PA: --℃", size=14, color=ColorConfig.TEXT_MAIN)
-        self.status_text = ft.Text("", color=ColorConfig.TEXT_MAIN)
+        self.txt_temp_bat = ft.Text("电池温度: --℃", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_temp_mdm = ft.Text("4G Modem: --℃", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_temp_pa = ft.Text("PA: --℃", size=14, color=ft.Colors.ON_SURFACE)
+        self.status_text = ft.Text("", color=ft.Colors.ON_SURFACE)
         
         # 重新排版
         self.content = ft.Column([
             self.txt_provider, self.txt_battery, self.txt_network, self.txt_conn_time, self.txt_wan_ip,
-            ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
             self.txt_tx_speed, self.txt_rx_speed, self.txt_traffic_rt, self.txt_traffic_mo, self.txt_users,
-            ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
             self.txt_freq, self.txt_pci, self.txt_ecellid, self.txt_rsrp, self.txt_rsrq, self.txt_sinr, self.txt_rssi,
-            ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
             self.txt_temp_bat, self.txt_temp_mdm, self.txt_temp_pa,
-            ft.Divider(height=8, color=ColorConfig.DIVIDER_COLOR),
+            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
             self.status_text
         ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
@@ -614,18 +653,18 @@ class StatusCard(ft.Container):
             self.status_text.color = color
             self.update()
 
+    # 核心 Diff 函数：对比新旧值，只有变化时才赋值并标记脏数据
+    def _update_field(self, ctrl: ft.Text, new_val: str) -> bool:
+        ctrl_id = id(ctrl)
+        if self._last_data_hash.get(ctrl_id) != new_val:
+            ctrl.value = new_val
+            self._last_data_hash[ctrl_id] = new_val
+            return True
+        return False
+
     def update_realtime(self, res: dict, macs_count: Optional[int] = None):
         sep = "\n" if self.is_small else " "
-        has_changes = False  # 标记本次拉取是否有任何字段发生变化
-
-        # 核心 Diff 函数：对比新旧值，只有变化时才赋值并标记脏数据
-        def update_field(ctrl: ft.Text, new_val: str):
-            nonlocal has_changes
-            ctrl_id = id(ctrl)
-            if self._last_data_hash.get(ctrl_id) != new_val:
-                ctrl.value = new_val
-                self._last_data_hash[ctrl_id] = new_val
-                has_changes = True
+        has_changes = False
 
         # 设备状态与网络信息
         net_type = res.get('network_type', '?')
@@ -636,13 +675,16 @@ class StatusCard(ft.Container):
         band = nr_band if (is_5g and nr_band) else lte_band
         
         provider = str(res.get('network_provider', '')).upper()
-        update_field(self.txt_provider, f"运营商:{sep}{provider or '--'}")
+        if self._update_field(self.txt_provider, f"运营商:{sep}{provider or '--'}"): has_changes = True
         
         bat = str(res.get('battery_value', '?'))
         charge = "充电中" if str(res.get('battery_charging', '')) in ['1', '2'] else "未充电"
-        update_field(self.txt_battery, f"电量:{sep}{bat}% ({charge})")
-        update_field(self.txt_network, f"网络:{sep}{net_type} ({band})" if band else f"网络:{sep}{net_type}")
-        update_field(self.txt_wan_ip, f"WAN IP:{sep}{res.get('wan_ipaddr', '未分配')}")
+        if self._update_field(self.txt_battery, f"电量:{sep}{bat}% ({charge})"): has_changes = True
+        
+        net_str = f"网络:{sep}{net_type} ({band})" if band else f"网络:{sep}{net_type}"
+        if self._update_field(self.txt_network, net_str): has_changes = True
+        
+        if self._update_field(self.txt_wan_ip, f"WAN IP:{sep}{res.get('wan_ipaddr', '未分配')}"): has_changes = True
         
         try:
             conn_time = int(res.get("realtime_time", 0))
@@ -651,59 +693,46 @@ class StatusCard(ft.Container):
             time_str = f"连接时长:{sep}{hours:02d}:{minutes:02d}:{seconds:02d}"
         except Exception:
             time_str = f"连接时长:{sep}--"
-        update_field(self.txt_conn_time, time_str)
+        if self._update_field(self.txt_conn_time, time_str): has_changes = True
 
         # 流量与设备信息
-        update_field(self.txt_tx_speed, f"上传速度:{sep}{format_bytes(res.get('realtime_tx_thrpt', 0))}/s")
-        update_field(self.txt_rx_speed, f"下载速度:{sep}{format_bytes(res.get('realtime_rx_thrpt', 0))}/s")
+        if self._update_field(self.txt_tx_speed, f"上传速度:{sep}{format_bytes(res.get('realtime_tx_thrpt', 0))}/s"): has_changes = True
+        if self._update_field(self.txt_rx_speed, f"下载速度:{sep}{format_bytes(res.get('realtime_rx_thrpt', 0))}/s"): has_changes = True
         
         rt_total = safe_float(res.get("realtime_tx_bytes")) + safe_float(res.get("realtime_rx_bytes"))
         mo_total = safe_float(res.get("monthly_tx_bytes")) + safe_float(res.get("monthly_rx_bytes"))
-        update_field(self.txt_traffic_rt, f"本次流量:{sep}{format_bytes(rt_total)}")
-        update_field(self.txt_traffic_mo, f"当月流量:{sep}{format_bytes(mo_total)}")
+        if self._update_field(self.txt_traffic_rt, f"本次流量:{sep}{format_bytes(rt_total)}"): has_changes = True
+        if self._update_field(self.txt_traffic_mo, f"当月流量:{sep}{format_bytes(mo_total)}"): has_changes = True
         
         if macs_count is not None:
-            update_field(self.txt_users, f"接入设备:{sep}{macs_count} 台")
+            if self._update_field(self.txt_users, f"接入设备:{sep}{macs_count} 台"): has_changes = True
 
         # 射频信号参数
         freq_5g = str(res.get("nr5g_action_channel", "") or res.get("nr5g_arfcn", "") or res.get("Z5g_arfcn", "")).strip()
         freq_4g = str(res.get("wan_active_channel", "")).strip()
-        update_field(self.txt_freq, f"ARFCN (小区频点):{sep}{freq_5g or freq_4g or '--'}")
-        
-        #十六进制转十进制
-        def parse_hex(raw):
-            raw = str(raw).strip()
-            if not raw:
-                return ""
-            try:
-                return str(int(raw, 16))
-            except ValueError:     
-                try:
-                    return str(int(raw))
-                except ValueError:
-                    return raw
+        if self._update_field(self.txt_freq, f"ARFCN (小区频点):{sep}{freq_5g or freq_4g or '--'}"): has_changes = True
         
         pci_5g_raw = res.get("nr5g_pci", "") or res.get("Z5g_pci", "")
         pci_4g_raw = res.get("lte_pci", "")
-        display_pci_5g = parse_hex(pci_5g_raw)
-        display_pci_4g = parse_hex(pci_4g_raw)
-        update_field(self.txt_pci, f"PCI (物理小区标识):{sep}{display_pci_5g or display_pci_4g or '--'}")
+        display_pci_5g = parse_hex_safe(pci_5g_raw)
+        display_pci_4g = parse_hex_safe(pci_4g_raw)
+        if self._update_field(self.txt_pci, f"PCI (物理小区标识):{sep}{display_pci_5g or display_pci_4g or '--'}"): has_changes = True
 
         rsrp_5g = str(res.get('Z5g_rsrp', '') or res.get('nr5g_rsrp', '')).strip()
         rsrp_4g = str(res.get('lte_rsrp', '')).strip()
-        update_field(self.txt_rsrp, f"RSRP (信号强度):{sep}{rsrp_5g or rsrp_4g or '--'} dBm")
+        if self._update_field(self.txt_rsrp, f"RSRP (信号强度):{sep}{rsrp_5g or rsrp_4g or '--'} dBm"): has_changes = True
 
         rsrq_5g = str(res.get('Z5g_rsrq', '') or res.get('nr5g_rsrq', '')).strip()
         rsrq_4g = str(res.get('lte_rsrq', '')).strip()
-        update_field(self.txt_rsrq, f"RSRQ (信号质量):{sep}{rsrq_5g or rsrq_4g or '--'} dB")
+        if self._update_field(self.txt_rsrq, f"RSRQ (信号质量):{sep}{rsrq_5g or rsrq_4g or '--'} dB"): has_changes = True
 
         sinr_5g = str(res.get('Z5g_SINR', '') or res.get('Z5g_sinr', '') or res.get('nr5g_sinr', '')).strip()
         sinr_4g = str(res.get('lte_snr', '') or res.get('lte_sinr', '')).strip()
-        update_field(self.txt_sinr, f"SINR (信噪比):{sep}{sinr_5g or sinr_4g or '--'} dB")
+        if self._update_field(self.txt_sinr, f"SINR (信噪比):{sep}{sinr_5g or sinr_4g or '--'} dB"): has_changes = True
 
         rssi_5g = str(res.get('Z5g_rssi', '') or res.get('nr5g_rssi', '')).strip()
         rssi_4g = str(res.get('lte_rssi', '')).strip()
-        update_field(self.txt_rssi, f"RSSI (接收总功率):{sep}{rssi_5g or rssi_4g or '--'} dBm")
+        if self._update_field(self.txt_rssi, f"RSSI (接收总功率):{sep}{rssi_5g or rssi_4g or '--'} dBm"): has_changes = True
 
         # 核心解算 eCellID (小区编号)
         raw_5g_val = str(res.get("nr5g_cell_id", "")).strip()
@@ -713,26 +742,18 @@ class StatusCard(ft.Container):
 
         mcc_mnc_raw = str(res.get('mcc_mnc', '')).strip()
         mcc_mnc = normalize_plmn(mcc_mnc_raw)
-        provider = str(res.get('network_provider', '')).upper()
 
-        # 位宽判断：优先 mcc_mnc，兜底 provider
-        is_14bit_provider = False
-        cmcc_plmns = {"46000", "46002", "46004", "46007", "46008", "46015"} 
-        cu_ct_plmns = {"46001", "46003", "46006", "46009", "46011"}
-
-        if mcc_mnc in cmcc_plmns:
+        # 改用全局常量判断
+        if mcc_mnc in CMCC_PLMNS:
             is_14bit_provider = True
-        elif mcc_mnc in cu_ct_plmns:
+        elif mcc_mnc in CU_CT_PLMNS:
             is_14bit_provider = False
         else:
-            cmcc_keys = {"移动", "MOBILE", "CMCC", "广电", "CBN", "中移", "CHINA MOBILE"}
-            if any(k in provider for k in cmcc_keys):
-                is_14bit_provider = True
+            is_14bit_provider = any(k in provider for k in CMCC_KEYS)
 
         nr_cell_bits = 14 if is_14bit_provider else 12
         ecellid_str = f"eCellID (小区编号):{sep}--"
 
-        # 解算输出 eCellID (小区编号)
         if is_5g and raw_5g_val and raw_5g_val != "0":
             dec_val = parse_cell_id(raw_5g_val)
             if dec_val > 0:
@@ -755,12 +776,12 @@ class StatusCard(ft.Container):
                 else:
                     ecellid_str = f"eCellID (小区编号):{sep}{raw_4g_val}"
         
-        update_field(self.txt_ecellid, ecellid_str)
+        if self._update_field(self.txt_ecellid, ecellid_str): has_changes = True
 
         # 温度信息
-        update_field(self.txt_temp_bat, f"电池温度:{sep}{res.get('battery_temp', '--')}℃")
-        update_field(self.txt_temp_mdm, f"4G Modem:{sep}{res.get('pm_sensor_mdm', '--')}℃")
-        update_field(self.txt_temp_pa, f"PA:{sep}{res.get('pm_sensor_pa1', '--')}℃")
+        if self._update_field(self.txt_temp_bat, f"电池温度:{sep}{res.get('battery_temp', '--')}℃"): has_changes = True
+        if self._update_field(self.txt_temp_mdm, f"4G Modem:{sep}{res.get('pm_sensor_mdm', '--')}℃"): has_changes = True
+        if self._update_field(self.txt_temp_pa, f"PA:{sep}{res.get('pm_sensor_pa1', '--')}℃"): has_changes = True
         
         # 只有当存在实际变化的字段时，才向前端发送 RPC 更新指令
         if has_changes:
@@ -771,43 +792,44 @@ class StatusCard(ft.Container):
 # ==========================================
 class RebootCard(ft.Container):
     def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
-        super().__init__(padding=15, bgcolor=ColorConfig.CARD_BG, border_radius=12)
+        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
         self.app_page = page
         self.api_client = client
         self.set_global_status = set_global_status_cb
-        self.sec_style = ft.TextStyle(color=ColorConfig.TEXT_SEC)
+        self.sec_style = ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT)
 
-        self.txt_local_time = ft.Text("设备当前时间: --", size=12, color=ColorConfig.TEXT_SEC)    
+        self.txt_local_time = ft.Text("设备当前时间: --", size=12, color=ft.Colors.ON_SURFACE_VARIANT)    
         # 定时重启功能绑定 on_change 事件
         self.reboot_enable = ft.Switch(
             value=False,
-            active_track_color=ColorConfig.ACCENT_COLOR, inactive_track_color=ColorConfig.BG_COLOR,
-            thumb_color=ColorConfig.TEXT_MAIN,
+            active_track_color=ft.Colors.PRIMARY, inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
             on_change=self.on_reboot_switch_change
         )
-        self.reboot_hint = ft.Text("提示：时:0~23 | 分:0~59 | 缓冲时间:1~6", size=12, color=ColorConfig.TEXT_SEC)
+
+        self.reboot_hint = ft.Text("提示：时:0~23 | 分:0~59 | 缓冲时间:1~6", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.reboot_mode = ft.Dropdown(
             label="重启模式",
             options=[ft.dropdown.Option("1", "1 - 按周自动重启"), ft.dropdown.Option("2", "2 - 按间隔天数")], 
-            value="1", color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
-            label_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
+            value="1",width=280, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
         )
         
         # 不再使用 expand，依赖 ResponsiveRow 的栅格系统来控制宽度
         self.rb_time_hr = ft.TextField(
             label="时", value="02", input_filter=ft.NumbersOnlyInputFilter(),
-            color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style,
-            border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
+            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style,
+            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
         )
         self.rb_time_min = ft.TextField(
             label="分", value="00", input_filter=ft.NumbersOnlyInputFilter(),
-            color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style,
-            border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
+            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style,
+            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
         )
         self.rb_buffer = ft.TextField(
             label="缓冲时间", value="02", input_filter=ft.NumbersOnlyInputFilter(),
-            color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style,
-            border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
+            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style,
+            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
         )
         
         # 采用 ResponsiveRow，小屏(sm)占据12格(独占一行)，中屏(md)占据4格(三分之一宽)
@@ -824,34 +846,34 @@ class RebootCard(ft.Container):
         self.week_cbs = [
             ft.Checkbox(
                 label=w, value=False, data=str(i+1), on_change=self.on_week_change,
-                label_style=ft.TextStyle(color=ColorConfig.TEXT_MAIN),
-                fill_color={"selected": ColorConfig.ACCENT_COLOR, "": ColorConfig.BG_COLOR},
-                check_color=ColorConfig.BG_COLOR
+                label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE),
+                fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE},
+                check_color=ft.Colors.SURFACE
             ) for i, w in enumerate(["周一", "周二", "周三", "周四", "周五", "周六", "周日"])
         ]
         self.rb_interval = ft.Dropdown(
             label="间隔天数",
             options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)],
-            value="1", menu_height=300, color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
-            label_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
+            value="1", menu_height=300,width=280, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
         )
         self.btn_save_reboot = create_button("保存重启规则", on_click=self.on_save_reboot)
         
         row_weeks = ft.Row(controls=[ft.Container(content=cb, width=75, padding=0, margin=0) for cb in self.week_cbs], wrap=True, spacing=10, run_spacing=5)
 
         self.content = ft.Column([
-            ft.Text("定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
-            self.txt_local_time, ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
-            ft.Row([self.reboot_enable, ft.Text("定时重启", color=ColorConfig.SWITCH_LABEL)], vertical_alignment=ft.CrossAxisAlignment.CENTER), 
-            self.reboot_hint, 
+            ft.Text("定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+            self.txt_local_time, ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+            ft.Row([self.reboot_enable, ft.Text("定时重启", color=ft.Colors.INVERSE_PRIMARY)], vertical_alignment=ft.CrossAxisAlignment.CENTER), 
+            self.reboot_hint,
             
             self.time_container,  # 响应式容器
             
             self.reboot_mode,
-            ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
-            ft.Text("选项1: 按周触发（仅选 1 生效）", size=13, color=ColorConfig.TEXT_SEC, weight=ft.FontWeight.BOLD),
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+            ft.Text("选项1: 按周触发（仅选 1 生效）", size=13, color=ft.Colors.ON_SURFACE_VARIANT, weight=ft.FontWeight.BOLD),
             row_weeks, ft.Container(height=5),
-            ft.Text("选项2: 间隔触发（仅选 2 生效）", size=13, color=ColorConfig.TEXT_SEC, weight=ft.FontWeight.BOLD),
+            ft.Text("选项2: 间隔触发（仅选 2 生效）", size=13, color=ft.Colors.ON_SURFACE_VARIANT, weight=ft.FontWeight.BOLD),
             self.rb_interval, ft.Container(height=10), self.btn_save_reboot
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
@@ -904,14 +926,14 @@ class RebootCard(ft.Container):
         payload = self._get_reboot_payload()
         try:
             if await self.api_client.post_cmd("FIX_TIME_REBOOT_SCHEDULE", payload):
-                self.set_global_status(f"定时重启已{'开启' if is_on else '关闭'}", ColorConfig.ACCENT_COLOR)
+                self.set_global_status(f"定时重启已{'开启' if is_on else '关闭'}", ft.Colors.PRIMARY)
                 show_toast(self.app_page, f"定时重启已{'开启' if is_on else '关闭'}", True)
             else:
-                self.set_global_status("定时重启状态切换失败", ColorConfig.ERROR_COLOR)
+                self.set_global_status("定时重启状态切换失败", ft.Colors.ERROR)
                 show_toast(self.app_page, "状态切换失败", False)
                 self.reboot_enable.value = not is_on
         except Exception:
-            self.set_global_status("定时重启状态切换异常", ColorConfig.ERROR_COLOR)
+            self.set_global_status("定时重启状态切换异常", ft.Colors.ERROR)
             show_toast(self.app_page, "状态切换异常", False)
             self.reboot_enable.value = not is_on
         self.update()
@@ -921,13 +943,13 @@ class RebootCard(ft.Container):
         payload = self._get_reboot_payload()
         try:
             if await self.api_client.post_cmd("FIX_TIME_REBOOT_SCHEDULE", payload):
-                self.set_global_status("定时重启配置已保存", ColorConfig.ACCENT_COLOR)
+                self.set_global_status("定时重启配置已保存", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "定时重启配置保存成功", True)
             else:
-                self.set_global_status("保存失败，请检查连接状态", ColorConfig.ERROR_COLOR)
+                self.set_global_status("保存失败，请检查连接状态", ft.Colors.ERROR)
                 show_toast(self.app_page, "定时重启配置保存失败", False)
         except Exception:
-            self.set_global_status("保存失败", ColorConfig.ERROR_COLOR)
+            self.set_global_status("保存失败", ft.Colors.ERROR)
         self.update()
 
 # ==========================================
@@ -935,12 +957,12 @@ class RebootCard(ft.Container):
 # ==========================================
 class SettingsCard(ft.Container):
     def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable, on_reboot_cb: Callable):
-        super().__init__(padding=15, bgcolor=ColorConfig.CARD_BG, border_radius=12)
+        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
         self.app_page = page 
         self.api_client = client
         self.set_global_status = set_global_status_cb
         self.on_reboot_device = on_reboot_cb
-        self.sec_style = ft.TextStyle(color=ColorConfig.TEXT_SEC)
+        self.sec_style = ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT)
         self.lte_selected: Set[str] = set(LTE_BANDS)
         self.nr_sa_selected: Set[str] = set(NR_SA_BANDS)
         self.nr_nsa_selected: Set[str] = set(NR_NSA_BANDS)
@@ -956,9 +978,9 @@ class SettingsCard(ft.Container):
         for b in bands:
             cb = ft.Checkbox(
                 label=f"{prefix}{b}", value=b in selected, data=b, on_change=on_change,
-                label_style=ft.TextStyle(color=ColorConfig.TEXT_MAIN),
-                fill_color={"selected": ColorConfig.ACCENT_COLOR, "": ColorConfig.BG_COLOR},
-                check_color=ColorConfig.BG_COLOR
+                label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE),
+                fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE},
+                check_color=ft.Colors.SURFACE
             )
             cb_map[b] = cb
             controls.append(ft.Container(content=cb, width=72, padding=0, margin=0))
@@ -993,17 +1015,17 @@ class SettingsCard(ft.Container):
         self.wifi_sleep = ft.Dropdown(
             label="WiFi 空闲休眠",
             options=[ft.dropdown.Option(str(k), v) for k, v in [("0", "永不休眠"), ("5", "5 分钟"), ("10", "10 分钟"), ("20", "20 分钟"), ("30", "30 分钟"), ("60", "1 小时"), ("120", "2 小时")]],
-            value="10", color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG,
-            label_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR
+            value="10",width=280, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
         )
         btn_wifi_sleep = create_button("保存休眠设置", on_click=self.on_wifi_sleep_save)
         
         # 数据连接开关
         self.data_switch = ft.Switch(
             value=True,
-            active_track_color=ColorConfig.ACCENT_COLOR,
-            inactive_track_color=ColorConfig.BG_COLOR,
-            thumb_color=ColorConfig.TEXT_MAIN,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
             on_change=self.on_data_switch_change
         )
         
@@ -1012,7 +1034,7 @@ class SettingsCard(ft.Container):
         for name in NET_CONFIG.keys():
             cb = ft.Checkbox(
                 label=name, value=(name == "5G/4G/3G"), on_change=self.on_net_mode_change,
-                label_style=ft.TextStyle(color=ColorConfig.TEXT_MAIN), fill_color={"selected": ColorConfig.ACCENT_COLOR, "": ColorConfig.BG_COLOR}, check_color=ColorConfig.BG_COLOR
+                label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE), fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
             )
             self.net_mode_cbs[name] = cb
             net_mode_controls.append(ft.Container(content=cb, width=120, padding=0, margin=0))
@@ -1029,17 +1051,17 @@ class SettingsCard(ft.Container):
         
         # 锁小区表单
         # 统一加上 expand=True，强制它们撑满容器宽度以保证右侧对齐
-        self.cell_pci = ft.TextField(expand=True, color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR, input_filter=ft.NumbersOnlyInputFilter())
-        self.cell_earfcn = ft.TextField(expand=True, color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, hint_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR, input_filter=ft.NumbersOnlyInputFilter())
-        self.cell_band = ft.Dropdown(expand=True, options=[ft.dropdown.Option(b, str(b)) for b in ["1", "3", "28", "41", "78"]], value="1", color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR)
-        self.cell_scs = ft.Dropdown(expand=True, options=[ft.dropdown.Option(s, f"{s}KHz") for s in ["15", "30", "60"]], value="15", color=ColorConfig.TEXT_MAIN, bgcolor=ColorConfig.INPUT_BG, label_style=self.sec_style, border_color=ColorConfig.TEXT_SEC, focused_border_color=ColorConfig.ACCENT_COLOR)
-
+        self.cell_pci = ft.TextField(expand=True, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY, input_filter=ft.NumbersOnlyInputFilter())
+        self.cell_earfcn = ft.TextField(expand=True, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY, input_filter=ft.NumbersOnlyInputFilter())
+        self.cell_band = ft.Dropdown(expand=True, options=[ft.dropdown.Option(b, str(b)) for b in ["1", "3", "28", "41", "78"]], value="1", color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY)
+        self.cell_scs = ft.Dropdown(expand=True, options=[ft.dropdown.Option(s, f"{s}KHz") for s in ["15", "30", "60"]], value="15", color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY)
+       
         # 采用 ResponsiveRow 自动处理排版：小屏标签居上(折行)，中屏标签居左(同一行)
         def create_responsive_field(label_text: str, control: ft.Control) -> ft.ResponsiveRow:
             return ft.ResponsiveRow(
                 controls=[
                     ft.Container(
-                        ft.Text(label_text, color=ColorConfig.TEXT_MAIN), 
+                        ft.Text(label_text, color=ft.Colors.ON_SURFACE), 
                         col={"sm": 12, "md": 3},
                         alignment=ft.Alignment.CENTER_LEFT,
                     ),
@@ -1054,36 +1076,36 @@ class SettingsCard(ft.Container):
         row_band = create_responsive_field("BAND", self.cell_band)
         row_scs = create_responsive_field("SCS", self.cell_scs)
         
-        cell_tip = ft.Text("设备重启后生效", size=13, color=ColorConfig.TEXT_SEC, text_align=ft.TextAlign.CENTER)
+        cell_tip = ft.Text("设备重启后生效", size=13, color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER)
         
         btn_cell_apply = create_button("应用锁小区", on_click=self.on_cell_lock)
         btn_cell_unlock = create_button("清除锁定", on_click=self.on_cell_unlock, expand=True)
         btn_cell_reboot = create_button("重启设备", on_click=self.on_reboot_device, expand=True)
 
         self.content = ft.Column([
-            ft.Text("高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
-            ft.Divider(height=10, color=ColorConfig.DIVIDER_COLOR),
-            ft.Text("WiFi 省电休眠", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
+            ft.Text("高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+            ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
+            ft.Text("WiFi 省电休眠", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
             self.wifi_sleep, btn_wifi_sleep, ft.Container(height=15),
             
             # 网络模式锁定，数据连接开关
-            ft.Text("网络模式锁定", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
-            ft.Row([self.data_switch, ft.Text("数据连接", color=ColorConfig.SWITCH_LABEL)], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Text("网络模式锁定", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+            ft.Row([self.data_switch, ft.Text("数据连接", color=ft.Colors.INVERSE_PRIMARY)], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             net_mode_grid, btn_net_mode_apply, ft.Container(height=15),
             
             ft.Column([
-                ft.Text("网络频段锁定", weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
-                ft.Text("每项至少保留一个频段", size=12, color=ColorConfig.TEXT_SEC)
+                ft.Text("网络频段锁定", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                ft.Text("每项至少保留一个频段", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
             ], spacing=2),
-            ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
-            ft.Text("4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+            ft.Text("4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
             lte_grid, btn_lte_apply, ft.Container(height=10),
-            ft.Text("5G SA 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
+            ft.Text("5G SA 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
             sa_grid, btn_sa_apply, ft.Container(height=10),
-            ft.Text("5G NSA 频段", size=13, weight=ft.FontWeight.W_500, color=ColorConfig.TEXT_MAIN),
+            ft.Text("5G NSA 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
             nsa_grid, btn_nsa_apply, ft.Container(height=10),
-            ft.Text("5G 锁定小区", size=14, weight=ft.FontWeight.BOLD, color=ColorConfig.TEXT_MAIN),
-            ft.Divider(height=5, color=ColorConfig.DIVIDER_COLOR),
+            ft.Text("5G 锁定小区", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
             row_pci, row_earfcn, row_band, row_scs, cell_tip, btn_cell_apply,
             ft.Row([btn_cell_unlock, btn_cell_reboot], spacing=10),
         ], spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
@@ -1155,8 +1177,8 @@ class SettingsCard(ft.Container):
             elif is_disconnected and self.data_switch.value:
                 self.data_switch.value = False
                 self.update()
-
-   # 界面交互代码
+    
+    # 界面交互代码
     async def on_data_switch_change(self, e):
         self.is_switching_data = True
         is_on = self.data_switch.value
@@ -1165,14 +1187,14 @@ class SettingsCard(ft.Container):
             cmd = "CONNECT_NETWORK" if is_on else "DISCONNECT_NETWORK"
             ok = await self.api_client.post_cmd(cmd, {"notCallback": "true"})
             if ok:
-                self.set_global_status(f"数据连接已{'开启' if is_on else '关闭'}", ColorConfig.ACCENT_COLOR)
+                self.set_global_status(f"数据连接已{'开启' if is_on else '关闭'}", ft.Colors.PRIMARY)
                 show_toast(self.app_page, f"数据已{'开启' if is_on else '关闭'}", True)
             else:
-                self.set_global_status("数据状态切换失败", ColorConfig.ERROR_COLOR)
+                self.set_global_status("数据状态切换失败", ft.Colors.ERROR)
                 show_toast(self.app_page, "数据状态切换失败", False)
                 self.data_switch.value = not is_on
         except Exception:
-            self.set_global_status("数据状态切换异常", ColorConfig.ERROR_COLOR)
+            self.set_global_status("数据状态切换异常", ft.Colors.ERROR)
             show_toast(self.app_page, "数据状态切换异常", False)
             self.data_switch.value = not is_on
         finally:
@@ -1182,13 +1204,13 @@ class SettingsCard(ft.Container):
     async def on_wifi_sleep_save(self, e):
         try:
             if await self.api_client.post_cmd("SET_WIFI_SLEEP_INFO", {"sysIdleTimeToSleep": self.wifi_sleep.value}):
-                self.set_global_status("WiFi 休眠设置已保存", ColorConfig.ACCENT_COLOR)
+                self.set_global_status("WiFi 休眠设置已保存", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "WiFi 休眠设置保存成功", True)
             else:
-                self.set_global_status("保存失败", ColorConfig.ERROR_COLOR)
+                self.set_global_status("保存失败", ft.Colors.ERROR)
                 show_toast(self.app_page, "WiFi 休眠设置保存失败", False)
         except Exception:
-            self.set_global_status("保存失败", ColorConfig.ERROR_COLOR)
+            self.set_global_status("保存失败", ft.Colors.ERROR)
         self.update()
 
     async def on_apply_lte(self, e):
@@ -1201,13 +1223,13 @@ class SettingsCard(ft.Container):
                 "is_lte_band": "1", "lte_band_mask": lte_bands_to_mask(list(self.lte_selected))
             })
             if ok:
-                self.set_global_status("4G 频段设置完成", ColorConfig.ACCENT_COLOR)
+                self.set_global_status("4G 频段设置完成", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "4G 频段设置成功", True)
             else:
-                self.set_global_status("设置失败，请确认开发者权限已解锁", ColorConfig.ERROR_COLOR)
+                self.set_global_status("设置失败，请确认开发者权限已解锁", ft.Colors.ERROR)
                 show_toast(self.app_page, "4G 频段设置失败，请确认开发者权限", False)
         except Exception:
-            self.set_global_status("设置失败", ColorConfig.ERROR_COLOR)
+            self.set_global_status("设置失败", ft.Colors.ERROR)
         self.update()
 
     async def on_apply_sa(self, e):
@@ -1219,13 +1241,13 @@ class SettingsCard(ft.Container):
                 "nr5g_band_mask": ",".join(sorted(self.nr_sa_selected, key=int)), "type": "0"
             })
             if ok:
-                self.set_global_status("5G SA 频段设置完成", ColorConfig.ACCENT_COLOR)
+                self.set_global_status("5G SA 频段设置完成", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "5G SA 频段设置成功", True)
             else:
-                self.set_global_status("设置失败，请确认开发者权限已解锁", ColorConfig.ERROR_COLOR)
+                self.set_global_status("设置失败，请确认开发者权限已解锁", ft.Colors.ERROR)
                 show_toast(self.app_page, "5G SA 频段设置失败，请确认开发者权限", False)
         except Exception:
-            self.set_global_status("设置失败", ColorConfig.ERROR_COLOR)
+            self.set_global_status("设置失败", ft.Colors.ERROR)
         self.update()
 
     async def on_apply_nsa(self, e):
@@ -1237,13 +1259,13 @@ class SettingsCard(ft.Container):
                 "nr5g_band_mask": ",".join(sorted(self.nr_nsa_selected, key=int)), "type": "1"
             })
             if ok:
-                self.set_global_status("5G NSA 频段设置完成", ColorConfig.ACCENT_COLOR)
+                self.set_global_status("5G NSA 频段设置完成", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "5G NSA 频段设置成功", True)
             else:
-                self.set_global_status("设置失败，请确认开发者权限已解锁", ColorConfig.ERROR_COLOR)
+                self.set_global_status("设置失败，请确认开发者权限已解锁", ft.Colors.ERROR)
                 show_toast(self.app_page, "5G NSA 频段设置失败，请确认开发者权限", False)
         except Exception:
-            self.set_global_status("设置失败", ColorConfig.ERROR_COLOR)
+            self.set_global_status("设置失败", ft.Colors.ERROR)
         self.update()
 
     async def on_cell_lock(self, e):
@@ -1253,13 +1275,13 @@ class SettingsCard(ft.Container):
         lock_val = f"{self.cell_pci.value.strip()},{self.cell_earfcn.value.strip()},{self.cell_band.value},{self.cell_scs.value}"
         try:
             if await self.api_client.post_cmd("NR5G_LOCK_CELL_SET", {"nr5g_cell_lock": lock_val}):
-                self.set_global_status("锁小区配置下发完成", ColorConfig.ACCENT_COLOR)
+                self.set_global_status("锁小区配置下发完成", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "锁小区成功", True)
             else:
-                self.set_global_status("锁小区失败，请确认开发者权限已解锁", ColorConfig.ERROR_COLOR)
+                self.set_global_status("锁小区失败，请确认开发者权限已解锁", ft.Colors.ERROR)
                 show_toast(self.app_page, "锁小区失败，请确认开发者权限", False)
         except Exception:
-            self.set_global_status("锁小区失败", ColorConfig.ERROR_COLOR)
+            self.set_global_status("锁小区失败", ft.Colors.ERROR)
         self.update()
 
     async def on_cell_unlock(self, e):
@@ -1269,13 +1291,13 @@ class SettingsCard(ft.Container):
                 self.cell_earfcn.value = ""
                 self.cell_band.value = "1"
                 self.cell_scs.value = "15"
-                self.set_global_status("小区锁定已解除", ColorConfig.ACCENT_COLOR)
+                self.set_global_status("小区锁定已解除", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "小区锁定已解除", True)
             else:
-                self.set_global_status("解除失败，请确认开发者权限已解锁", ColorConfig.ERROR_COLOR)
+                self.set_global_status("解除失败，请确认开发者权限已解锁", ft.Colors.ERROR)
                 show_toast(self.app_page, "解除锁定失败", False)
         except Exception:
-            self.set_global_status("解除失败", ColorConfig.ERROR_COLOR)
+            self.set_global_status("解除失败", ft.Colors.ERROR)
         self.update()
 
     async def on_apply_net_mode(self, e):
@@ -1311,21 +1333,21 @@ class SettingsCard(ft.Container):
                 else:
                     status_msg = "网络模式配置已下发，需手动重连生效"
                     toast_msg = "配置已保存，未改动数据连接状态"
-                self.set_global_status(status_msg, ColorConfig.ACCENT_COLOR)
+                self.set_global_status(status_msg, ft.Colors.PRIMARY)
                 show_toast(self.app_page, toast_msg, True)
             else:
-                self.set_global_status("设置失败（配置未生效或操作期间被挤下线）", ColorConfig.ERROR_COLOR)
+                self.set_global_status("设置失败（配置未生效或操作期间被挤下线）", ft.Colors.ERROR)
                 show_toast(self.app_page, "网络切换失败（可能被挤下线）", False)
         except httpx.RequestError:
-            self.set_global_status("网络连接异常", ColorConfig.ERROR_COLOR)
+            self.set_global_status("网络连接异常", ft.Colors.ERROR)
             show_toast(self.app_page, "网络连接异常", False)
         except Exception:
-            self.set_global_status("设置失败", ColorConfig.ERROR_COLOR)
+            self.set_global_status("设置失败", ft.Colors.ERROR)
             show_toast(self.app_page, "网络切换失败", False)
         self.update()
 
 # ==========================================
-# 主程序：应用类封装 (面向对象重构版)
+# 主程序：应用类封装
 # ==========================================
 class MU5001:
     def __init__(self, page: ft.Page):
@@ -1333,11 +1355,24 @@ class MU5001:
         logger.info("应用启动，初始化主页面")
         
         # 1. 页面基础设置
-        self.page.theme = ft.Theme(font_family="Source Han Sans SC, Noto Sans SC, Microsoft YaHei, sans-serif")
         self.page.title = "MU5001"
         self.page.padding = 0
+        
+        # 挂载深色主题配色字典 (直接原封不动传给引擎)
+        self.page.dark_theme = ft.Theme(
+            font_family="Source Han Sans SC, Noto Sans SC, Microsoft YaHei, sans-serif",
+            color_scheme=ft.ColorScheme(**ThemeColors.DARK_SCHEME)
+        )
+        
+        # 挂载浅色主题配色字典 (直接原封不动传给引擎)
+        self.page.theme = ft.Theme(
+            font_family="Source Han Sans SC, Noto Sans SC, Microsoft YaHei, sans-serif",
+            color_scheme=ft.ColorScheme(**ThemeColors.LIGHT_SCHEME)
+        )
+        
+        # 设定初始状态为深色模式，并赋予独立的页面背景色
         self.page.theme_mode = ft.ThemeMode.DARK
-        self.page.bgcolor = ColorConfig.BG_COLOR
+        self.page.bgcolor = ThemeColors.DARK_PAGE_BG
         
         # 2. 全局状态初始化
         self.device_state = DeviceState()
@@ -1379,20 +1414,36 @@ class MU5001:
     def build_main_view(self):
         # 顶部吸顶操作区
         self.logout_btn = create_button("退出", on_click=self.do_logout, height=36)
-        self.logout_btn.style.bgcolor = ColorConfig.TOP_BTN_BG
-        self.logout_btn.style.color = ColorConfig.TOP_BTN_TEXT
+        self.logout_btn.style.bgcolor = ft.Colors.PRIMARY_CONTAINER
+        self.logout_btn.style.color = ft.Colors.ON_PRIMARY_CONTAINER
         
         self.relogin_btn = create_button("重登", on_click=self.do_relogin, height=36)
-        self.relogin_btn.style.bgcolor = ColorConfig.TOP_BTN_BG
-        self.relogin_btn.style.color = ColorConfig.TOP_BTN_TEXT
+        self.relogin_btn.style.bgcolor = ft.Colors.PRIMARY_CONTAINER
+        self.relogin_btn.style.color = ft.Colors.ON_PRIMARY_CONTAINER
 
-        self.header_text = ft.Text(
-            "设备状态", size=20, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER, 
-            expand=True, color=ColorConfig.TEXT_MAIN, no_wrap=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS
+        # 切换主题模式
+        self.theme_btn = ft.IconButton(
+            icon=ft.Icons.DARK_MODE,  #默认使用暗色图标
+            icon_color=ft.Colors.ON_SURFACE,
+            on_click=self.toggle_theme,
+            tooltip="切换主题模式"
         )
 
+        # 将主题按钮 self.theme_btn 塞进顶栏里
         self.sticky_header = ft.Container(
-            content=ft.Row([self.logout_btn, self.header_text, self.relogin_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            content=ft.Row(
+                [
+                    # 左区：强制占据 1/3 宽度，内部坐标 (-1, 0) 绝对靠左
+                    ft.Container(self.logout_btn, expand=True, alignment=ft.Alignment(-1, 0)),
+                    
+                    # 中区：强制占据 1/3 宽度，内部坐标 (0, 0) 绝对居中
+                    ft.Container(self.theme_btn, expand=True, alignment=ft.Alignment(0, 0)),
+                    
+                    # 右区：强制占据 1/3 宽度，内部坐标 (1, 0) 绝对靠右
+                    ft.Container(self.relogin_btn, expand=True, alignment=ft.Alignment(1, 0)),
+                ], 
+                vertical_alignment=ft.CrossAxisAlignment.CENTER
+            )
         )
 
         # 中部滚动控制区
@@ -1424,19 +1475,33 @@ class MU5001:
             )
         )
 
-    # ---------------- 业务交互与任务调度 ---------------- #
+    # 业务交互与任务调度
     async def on_reboot_device(self, e=None):
         show_toast(self.page, "正在发送重启指令...", True)
         try:
             if await self.client.post_cmd("REBOOT_DEVICE"):
-                self.status_card.set_global_status("重启指令已发送，设备即将重启", ColorConfig.ACCENT_COLOR)
+                self.status_card.set_global_status("重启指令已发送，设备即将重启", ft.Colors.PRIMARY)
                 show_toast(self.page, "设备即将重启", True)
             else:
-                self.status_card.set_global_status("重启失败", ColorConfig.ERROR_COLOR)
+                self.status_card.set_global_status("重启失败", ft.Colors.ERROR)
                 show_toast(self.page, "设备重启失败", False)
         except Exception:
-            self.status_card.set_global_status("重启失败", ColorConfig.ERROR_COLOR)
+            self.status_card.set_global_status("重启失败", ft.Colors.ERROR)
             show_toast(self.page, "设备重启失败", False)
+
+    # 动态切换主题函数（利用 Flet 原生引擎，告别递归）
+    async def toggle_theme(self, e):
+        if self.page.theme_mode == ft.ThemeMode.DARK:
+            self.page.theme_mode = ft.ThemeMode.LIGHT
+            self.page.bgcolor = ThemeColors.LIGHT_PAGE_BG
+            self.theme_btn.icon = ft.Icons.LIGHT_MODE
+        else:
+            self.page.theme_mode = ft.ThemeMode.DARK
+            self.page.bgcolor = ThemeColors.DARK_PAGE_BG
+            self.theme_btn.icon = ft.Icons.DARK_MODE
+            
+        # 触发全局重绘
+        self.page.update()
 
     def start_auto_refresh(self):
         if self.auto_refresh_task and not self.auto_refresh_task.done():
@@ -1478,7 +1543,6 @@ class MU5001:
                 "Z5g_rssi,nr5g_rssi,ppp_status"
             )
             res = await self.client.get_cmd(cmd, multi_data=True)
-            
             macs_count = None
             try:
                 wifi_res = await self.client.get_cmd("station_list")
@@ -1501,7 +1565,7 @@ class MU5001:
     async def refresh_all(self, e=None):
         if not self.device_state.client:
             return
-        self.status_card.set_global_status("正在读取设备信息...", ColorConfig.TEXT_MAIN)
+        self.status_card.set_global_status("正在读取设备信息...", ft.Colors.ON_SURFACE)
         try:
             cmd = (
                 "sysIdleTimeToSleep,lte_band_lock,nr5g_sa_band_lock,nr5g_nsa_band_lock,"
@@ -1516,18 +1580,21 @@ class MU5001:
             
             self.reboot_card.update_config(res)
             self.settings_card.update_config(
-                res, sa_res.get("nr5g_sa_band_lock", ""), nsa_res.get("nr5g_nsa_band_lock", ""), current_net_mode
+                res, 
+                sa_res.get("nr5g_sa_band_lock", ""), 
+                nsa_res.get("nr5g_nsa_band_lock", ""), 
+                current_net_mode
             )
-            
+
             dev_status = " | 开发者已解锁" if self.device_state.dev_unlocked else " | 开发者未解锁"
-            self.status_card.set_global_status("数据读取成功" + dev_status, ColorConfig.ACCENT_COLOR if self.device_state.dev_unlocked else ColorConfig.ERROR_COLOR)
+            self.status_card.set_global_status("数据读取成功" + dev_status, ft.Colors.PRIMARY if self.device_state.dev_unlocked else ft.Colors.ERROR)
             
             await self.fetch_realtime()
             if e:
                 show_toast(self.page, "数据刷新成功", True)
             logger.info("全量配置刷新完成")
         except Exception:
-            self.status_card.set_global_status("读取失败，请检查连接", ColorConfig.ERROR_COLOR)
+            self.status_card.set_global_status("读取失败，请检查连接", ft.Colors.ERROR)
             if e:
                 show_toast(self.page, "数据读取失败，请检查连接", False)
 
@@ -1555,17 +1622,17 @@ class MU5001:
                     logger.warning(f"重登后自动开启数据连接失败: {conn_err}")
 
                 if dev_ok:
-                    self.status_card.set_global_status("重登成功并已解锁开发者权限", ColorConfig.ACCENT_COLOR)
+                    self.status_card.set_global_status("重登成功并已解锁开发者权限", ft.Colors.PRIMARY)
                     show_toast(self.page, "重登成功，开发者解锁成功，已尝试开启数据", True)
                 else:
-                    self.status_card.set_global_status("重登成功，开发者解锁失败", ColorConfig.ERROR_COLOR)
+                    self.status_card.set_global_status("重登成功，开发者解锁失败", ft.Colors.ERROR)
                     show_toast(self.page, "重登成功，但开发者解锁失败", False)
                 await self.refresh_all()
             else:
-                self.status_card.set_global_status("重新登录失败，可能密码已修改或被锁定", ColorConfig.ERROR_COLOR)
+                self.status_card.set_global_status("重新登录失败，可能密码已修改或被锁定", ft.Colors.ERROR)
                 show_toast(self.page, "重登失败", False)
         except Exception:
-            self.status_card.set_global_status("重登连接失败，请检查网络", ColorConfig.ERROR_COLOR)
+            self.status_card.set_global_status("重登连接失败，请检查网络", ft.Colors.ERROR)
             show_toast(self.page, "连接失败，请检查网络", False)
 
     async def do_logout(self, e=None):
@@ -1606,13 +1673,17 @@ class MU5001:
             if self.relogin_btn.style: self.relogin_btn.style.padding = ft.Padding.symmetric(horizontal=8, vertical=0)
             self.logout_btn.height = 26
             self.relogin_btn.height = 26
-            self.header_text.visible = False if self.page.width < 260 else True
+            
+            # 小屏幕时把主题图标缩小
+            self.theme_btn.icon_size = 18  
         else:
             if self.logout_btn.style: self.logout_btn.style.padding = None
             if self.relogin_btn.style: self.relogin_btn.style.padding = None
             self.logout_btn.height = 36
             self.relogin_btn.height = 36
-            self.header_text.visible = True
+            
+            # 大屏幕时恢复默认图标尺寸
+            self.theme_btn.icon_size = 24  
 
         self.status_card.update()
         self.page.update()

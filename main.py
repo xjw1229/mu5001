@@ -862,24 +862,52 @@ class StatusCard(ft.Container):
         charge = "充电中" if status.is_charging else "未充电"
         if self._update_field(self.txt_battery, f"电量:{sep}{status.battery_percent}% ({charge})"): has_changes = True
         
-        # 网络与 IP 及频段拼接
+        # 网络与频段
         band_display = ""
-        is_5g_net = any(k in status.network_type.upper() for k in ['5G', 'SA', 'NSA'])
+        net_type_upper = status.network_type.upper()
         
-        # 支持载波聚合(CA)多频段显示，及 NSA 双连接(4G+5G)合并显示
-        bands_list = []
-        if status.active_band_4g:
-            # 拆分并给每个 4G 频段加 B
-            b4g = [f"B{b.strip()}" if b.strip().isdigit() else b.strip() for b in status.active_band_4g.split(',')]
-            bands_list.extend(b4g)
-            
-        if is_5g_net and status.active_band_5g:
-            # 拆分并给每个 5G 频段加 n
-            b5g = [f"n{b.strip()}" if b.strip().isdigit() else b.strip() for b in status.active_band_5g.split(',')]
-            bands_list.extend(b5g)
+        is_sa = "SA" in net_type_upper and "NSA" not in net_type_upper
+        is_nsa = "NSA" in net_type_upper
 
-        # 过滤空值并用加号连接，展示双连接状态
-        valid_bands = [b for b in bands_list if b and b not in ("B", "n")]
+        # 处理并清洗 4G 频段
+        lte_bands = []
+        if status.active_band_4g:
+            for b in status.active_band_4g.split(','):
+                num = ''.join(filter(str.isdigit, b))
+                if num:
+                    lte_bands.append(f"B{num}")
+                elif b.strip():
+                    lte_bands.append(b.strip())
+            
+        # 处理并清洗 5G 频段
+        nr_bands = []
+        if status.active_band_5g:
+            for b in status.active_band_5g.split(','):
+                num = ''.join(filter(str.isdigit, b))
+                if num:
+                    nr_bands.append(f"n{num}")
+                elif b.strip():
+                    nr_bands.append(b.strip())
+
+        # 核心修复：根据网络模式正确决定频段组合，避免 NSA 锚点丢失或 SA 幽灵数据
+        display_bands = []
+        if is_sa:
+            # 纯 SA 模式：严格抛弃 4G 锚点残留数据，仅使用 5G 频段
+            display_bands = nr_bands
+        elif is_nsa:
+            # NSA 模式：合并 4G 锚点与 5G 射频频段
+            display_bands = lte_bands + nr_bands
+        else:
+            # 纯 4G/3G 模式
+            display_bands = lte_bands
+
+        # 过滤空值并去重
+        valid_bands = []
+        for b in display_bands:
+            if b and b not in valid_bands:
+                valid_bands.append(b)
+
+        # 拼接成带括号的字符串
         if valid_bands:
             band_display = f" ({' + '.join(valid_bands)})"
 
@@ -887,7 +915,7 @@ class StatusCard(ft.Container):
         if self._update_field(self.txt_network, net_str): has_changes = True
         if self._update_field(self.txt_wan_ip, f"WAN IP:{sep}{status.wan_ip}"): has_changes = True
         
-        # 时长
+        # 连接时长
         hours, rem = divmod(status.conn_time_sec, 3600)
         minutes, seconds = divmod(rem, 60)
         time_str = f"连接时长:{sep}{hours:02d}:{minutes:02d}:{seconds:02d}" if status.conn_time_sec > 0 else f"连接时长:{sep}--"
@@ -1755,23 +1783,19 @@ class MU5001:
         except Exception as e:
             logger.warning(f"SharedPreferences 初始化失败: {e}")
 
-        # 读取并应用保存的主题
-        saved_theme = "DARK"
+        # 绑定系统亮度变化事件
+        self.page.on_platform_brightness_change = self.on_platform_brightness_change
+
+        # 读取并应用保存的主题 (默认改为 SYSTEM)
+        saved_theme = "SYSTEM"
         if self.prefs:
             try:
                 if hasattr(self.prefs, "get_async"):
-                    saved_theme = await self.prefs.get_async("saved_theme") or "DARK"
+                    saved_theme = await self.prefs.get_async("saved_theme") or "SYSTEM"
                 else:
-                    saved_theme = await self.prefs.get("saved_theme") or "DARK"
+                    saved_theme = await self.prefs.get("saved_theme") or "SYSTEM"
             except Exception:
                 pass
-                
-        if saved_theme == "LIGHT":
-            self.page.theme_mode = ft.ThemeMode.LIGHT
-            self.page.bgcolor = ThemeColors.LIGHT_PAGE_BG
-        else:
-            self.page.theme_mode = ft.ThemeMode.DARK
-            self.page.bgcolor = ThemeColors.DARK_PAGE_BG
 
         # 实例化各个 UI 业务组件
         self.login_view = LoginView(self.page, self.client, self.prefs, on_login_success=self.on_login_success)
@@ -1779,15 +1803,12 @@ class MU5001:
         self.reboot_card = RebootCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
         self.settings_card = SettingsCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status, on_reboot_cb=self.on_reboot_device)
 
-        # 构建主视图布局
+        # 构建主视图布局 (这一步会创建 self.theme_btn)
         self.build_main_view()
 
-        # 同步主题按钮初始图标
-        if self.page.theme_mode == ft.ThemeMode.LIGHT:
-            self.theme_btn.icon = ft.Icons.LIGHT_MODE
-        else:
-            self.theme_btn.icon = ft.Icons.DARK_MODE
-        # ---------------------------------------------
+        # 统一调用主题应用方法
+        self.current_theme_str = saved_theme
+        await self.apply_theme(saved_theme)
 
         # 绑定页面全局事件
         self.page.on_resize = self.on_page_resize
@@ -1885,32 +1906,59 @@ class MU5001:
             show_toast(self.page, "设备重启失败", False)
 
     # 动态切换主题函数
-    async def toggle_theme(self, e):
-        target_theme = "DARK"
+    async def apply_theme(self, theme_str: str):
+        self.current_theme_str = theme_str
         
-        if self.page.theme_mode == ft.ThemeMode.DARK:
+        if theme_str == "LIGHT":
             self.page.theme_mode = ft.ThemeMode.LIGHT
             self.page.bgcolor = ThemeColors.LIGHT_PAGE_BG
             self.theme_btn.icon = ft.Icons.LIGHT_MODE
-            target_theme = "LIGHT"
-        else:
+            self.theme_btn.tooltip = "切换主题模式 (当前: 浅色)"
+        elif theme_str == "DARK":
             self.page.theme_mode = ft.ThemeMode.DARK
             self.page.bgcolor = ThemeColors.DARK_PAGE_BG
             self.theme_btn.icon = ft.Icons.DARK_MODE
-            target_theme = "DARK"
+            self.theme_btn.tooltip = "切换主题模式 (当前: 深色)"
+        else: 
+            # SYSTEM (跟随系统)
+            self.page.theme_mode = ft.ThemeMode.SYSTEM
+            # 获取当前系统的真实亮度来决定你的自定义背景色
+            is_dark = self.page.platform_brightness == ft.Brightness.DARK
+            self.page.bgcolor = ThemeColors.DARK_PAGE_BG if is_dark else ThemeColors.LIGHT_PAGE_BG
+            # 使用一个代表“自动”的图标
+            self.theme_btn.icon = ft.Icons.BRIGHTNESS_AUTO
+            self.theme_btn.tooltip = "切换主题模式 (当前: 跟随系统)"
             
         # 保存主题选择到本地
         if self.prefs:
             try:
                 if hasattr(self.prefs, "set_async"):
-                    await self.prefs.set_async("saved_theme", target_theme)
+                    await self.prefs.set_async("saved_theme", theme_str)
                 else:
-                    await self.prefs.set("saved_theme", target_theme)
+                    await self.prefs.set("saved_theme", theme_str)
             except Exception as ex:
                 logger.warning(f"保存主题偏好失败: {ex}")
                 
-        # 触发全局重绘
         self.page.update()
+    # 点击按钮时循环切换主题: 跟随系统 -> 深色 -> 浅色
+    async def toggle_theme(self, e):
+
+        if getattr(self, "current_theme_str", "SYSTEM") == "SYSTEM":
+            target = "DARK"
+        elif self.current_theme_str == "DARK":
+            target = "LIGHT"
+        else:
+            target = "SYSTEM"
+            
+        await self.apply_theme(target)
+
+    def on_platform_brightness_change(self, e):
+
+        # 只有在“跟随系统”模式下，才去动态更新自定义背景色
+        if self.page.theme_mode == ft.ThemeMode.SYSTEM:
+            is_dark = self.page.platform_brightness == ft.Brightness.DARK
+            self.page.bgcolor = ThemeColors.DARK_PAGE_BG if is_dark else ThemeColors.LIGHT_PAGE_BG
+            self.page.update()
 
     def start_auto_refresh(self):
         if self.auto_refresh_task and not self.auto_refresh_task.done():

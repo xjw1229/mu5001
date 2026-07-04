@@ -1329,8 +1329,11 @@ class SettingsCard(ft.Container):
             self.wifi_sleep, btn_wifi_sleep, ft.Container(height=15),
 
             # WiFi 设置
-            ft.Text("WiFi 设置", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-            wifi_mode_container, btn_wifi_radio_apply, ft.Container(height=15), 
+            ft.Column([
+                ft.Text("WiFi 设置", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                ft.Text("应用后需重新连接 WiFi", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+            ], spacing=2),
+            wifi_mode_container, btn_wifi_radio_apply, ft.Container(height=15),
 
             # WiFi 覆盖范围
             ft.Text("WiFi 覆盖范围", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
@@ -1628,17 +1631,17 @@ class SettingsCard(ft.Container):
         show_toast(self.app_page, "正在应用 WiFi 覆盖范围...", True)
         try:
             if await self.api_client.set_wifi_coverage(self.wifi_coverage.value):
-                self.set_global_status("WiFi范围设置成功", ft.Colors.PRIMARY)
-                show_toast(self.app_page, "WiFi范围设置成功", True)
+                self.set_global_status("WiFi 范围设置成功", ft.Colors.PRIMARY)
+                show_toast(self.app_page, "WiFi 范围设置成功", True)
             else:
-                self.set_global_status("WiFi范围设置失败", ft.Colors.ERROR)
-                show_toast(self.app_page, "WiFi范围设置失败", False)
+                self.set_global_status("WiFi 范围设置失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "WiFi 范围设置失败", False)
         except Exception:
             self.set_global_status("设置异常", ft.Colors.ERROR)
         self.update()
 
-    # WiFi 设置
-    async def on_apply_wifi_radio(self, e):
+    # 执行 WiFi 设置的实际逻辑
+    async def _execute_apply_wifi_radio(self):
         mode = self.wifi_mode.value
         if not mode:
             show_toast(self.app_page, "请选择 WiFi 模式", False)
@@ -1648,21 +1651,66 @@ class SettingsCard(ft.Container):
         self.update()
 
         is_merged = (mode == "merged")
-        success = await self.api_client.apply_wifi_settings(
+        await self.api_client.apply_wifi_settings(
             is_merged=is_merged,
             broadcast_merged=self.cb_broadcast_merged.value,
             broadcast_24g=self.cb_broadcast_24g.value,
             broadcast_5g=self.cb_broadcast_5g.value
         )
 
-        if success:
-            self.set_global_status("WiFi 设置成功", ft.Colors.PRIMARY)
-            show_toast(self.app_page, "WiFi 设置成功", True)
-        else:
-            self.set_global_status("WiFi 设置或请求失败", ft.Colors.ERROR)
-            show_toast(self.app_page, "WiFi 设置失败", False)
-        
+        # 由于 WiFi 重启会导致断网，请求抛出异常或返回 False 均视为命令已送达
+        self.set_global_status("WiFi 设置已更改，请重新连接 WiFi", ft.Colors.PRIMARY)
+        show_toast(self.app_page, "设置已更改，WiFi 将重启", True)
         self.update()
+
+    # WiFi 设置（二次确认弹窗）
+    async def on_apply_wifi_radio(self, e):
+        async def close_dlg(e):
+            dlg.open = False
+            self.app_page.update()
+
+        async def confirm_dlg(e):
+            dlg.open = False
+            self.app_page.update()
+            await self._execute_apply_wifi_radio()
+
+        # WiFi 设置确认弹窗
+        dlg = ft.AlertDialog(
+            bgcolor=ft.Colors.SURFACE,
+            title_padding=ft.Padding(0, 0, 0, 0),
+            content_padding=ft.Padding(0, 0, 0, 0),
+            actions_padding=ft.Padding(0, 0, 0, 0), # 干掉底部预留给 actions 的空白
+            
+            inset_padding=ft.Padding(10, 24, 10, 24),
+            
+            # 固定高度
+            content=ft.Container(
+                height=70,  # 锁死 70 像素的胶囊高度
+                alignment=ft.Alignment(0, 0),  # 绝对居中
+                padding=ft.Padding(10, 0, 10, 0),
+                content=ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=ft.TextButton("取消", on_click=close_dlg, style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT)), 
+                            expand=True, 
+                            alignment=ft.Alignment(0, 0)
+                        ),
+                        ft.Container(
+                            content=ft.TextButton("确认", on_click=confirm_dlg, style=ft.ButtonStyle(color=ft.Colors.PRIMARY)), 
+                            expand=True, 
+                            alignment=ft.Alignment(0, 0)
+                        ),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=5
+                )
+            )
+        )
+        
+        # 将弹窗挂载到页面的浮层列表中
+        self.app_page.overlay.append(dlg)
+        dlg.open = True
+        self.app_page.update()
 
 # ==========================================
 # 主程序：应用类封装

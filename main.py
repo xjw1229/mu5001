@@ -215,6 +215,8 @@ class RealtimeStatus:
     battery_percent: str
     is_charging: bool
     wan_ip: str
+    imei: str
+    imsi: str
     conn_time_sec: int
     tx_speed: float
     rx_speed: float
@@ -243,12 +245,15 @@ class RealtimeStatus:
     is_data_connected: bool
     active_band_5g: str
     active_band_4g: str
+    connected_devices: list
 
 # 封装设备登录、配置读写、状态查询等所有 HTTP 交互，自动维护会话 Cookie 与 AD 鉴权计算。
 class MU5001Client:
     # 初始化客户端，state 为外部共享的设备状态实例
     def __init__(self, state: DeviceState):
         self.state = state
+        # 异步锁（Async Lock）机制
+        self._request_lock = asyncio.Lock()
         logger.debug("MU5001Client 实例已创建")
 
     # 拼接设备 IP 与接口路径，返回完整 URL
@@ -264,6 +269,10 @@ class MU5001Client:
 
     # 异步 GET 查询设备配置，cmd 支持逗号分隔多命令，multi_data 启用多数据返回模式
     async def get_cmd(self, cmd: str, multi_data: bool = False) -> Dict:
+        async with self._request_lock:
+            return await self._get_cmd_unlocked(cmd, multi_data)
+
+    async def _get_cmd_unlocked(self, cmd: str, multi_data: bool = False) -> Dict:
         if not self.state.client:
             raise RuntimeError("未登录设备，无法执行 GET 请求")
         params = {"isTest": "false", "cmd": cmd}
@@ -293,13 +302,17 @@ class MU5001Client:
     # 异步 POST 设置设备配置，自动计算 AD 鉴权
     # goform_id 为操作标识，params 为业务参数
     async def post_cmd(self, goform_id: str, params: Dict = None) -> bool:
+        async with self._request_lock:
+            return await self._post_cmd_unlocked(goform_id, params)
+
+    async def _post_cmd_unlocked(self, goform_id: str, params: Dict = None) -> bool:
         if not self.state.client:
             raise RuntimeError("未登录设备，无法执行 POST 请求")
         params = params or {}
         logger.debug(f"POST goformId={goform_id}, params={params}")
         try:
             # 重新获取 RD 并计算 AD
-            rd_res = await self.get_cmd("RD")
+            rd_res = await self._get_cmd_unlocked("RD")
             rd_val = rd_res.get("RD", "")
             ad = calculate_ad(self.state.rd0, self.state.rd1, rd_val)
             payload = {"isTest": "false", "goformId": goform_id, "AD": ad}
@@ -325,32 +338,65 @@ class MU5001Client:
     async def set_wifi_coverage(self, coverage_val: str) -> bool:
         return await self.post_cmd("setWiFiCoverage", {"WiFiCoverage": coverage_val})
 
-    # 异步应用 WiFi 设置
-    async def apply_wifi_settings(self, is_merged: bool, broadcast_merged: bool, broadcast_24g: bool, broadcast_5g: bool) -> bool:
+    # WiFi 设置：切换双频合一/分离模式
+    async def apply_wifi_mode(self, is_merged: bool) -> bool:
+        target_lbd = "1" if is_merged else "0"
         switch_payload = {
             "SwitchOption": "1",       
-            "wifi_lbd_enable": "1" if is_merged else "0"     
+            "wifi_lbd_enable": target_lbd     
         }
-        chip_payload = {
-            "ChipIndex": "9",
-            "AccessPointIndex": "0"
-        }
-        if is_merged:
-            val = "0" if broadcast_merged else "1"
-            chip_payload["ApBroadcastDisabled"] = val
-            chip_payload["ApBroadcastDisabled_5G"] = val
-        else:
-            chip_payload["ApBroadcastDisabled"] = "0" if broadcast_24g else "1"
-            chip_payload["ApBroadcastDisabled_5G"] = "0" if broadcast_5g else "1"
-
         try:
-            ok1 = await self.post_cmd("switchWiFiModule", switch_payload)
-            await asyncio.sleep(0.5)
-            ok2 = await self.post_cmd("setAccessPointInfo_24G_5G_ALL", chip_payload)
-            return ok1 and ok2
+            async with self._request_lock:
+                await self._post_cmd_unlocked("switchWiFiModule", switch_payload)
+                return True
         except Exception as e:
-            logger.error(f"WiFi 设置执行异常: {e}")
-            return False
+            logger.warning(f"切换 WiFi 模式时断网 (预期现象): {e}")
+            return True
+
+    # WiFi 设置：修改 SSID 广播状态
+    async def apply_wifi_broadcast(self, is_merged: bool, broadcast_merged: bool, broadcast_24g: bool, broadcast_5g: bool) -> bool:
+        try:
+            async with self._request_lock:
+                ap_info = await self._get_cmd_unlocked("queryAccessPointInfo")
+                chip_payload = {
+                    "ChipIndex": "9",
+                    "AccessPointIndex": "0",
+                    "QrImageShow": "1",
+                    "QrImageShow_5G": "1",
+                    "wifi_syncparas_flag": "0"
+                }
+                
+                if ap_info and "ResponseList" in ap_info:
+                    for ap in ap_info["ResponseList"]:
+                        if ap.get("AccessPointIndex") != "0": 
+                            continue
+                        c_idx = ap.get("ChipIndex")
+                        if c_idx == "0": 
+                            chip_payload["AccessPointSwitchStatus"] = ap.get("AccessPointSwitchStatus", "1")
+                            chip_payload["SSID"] = ap.get("SSID", "")
+                            chip_payload["ApIsolate"] = ap.get("ApIsolate", "0")
+                            chip_payload["AuthMode"] = ap.get("AuthMode", "")
+                            chip_payload["EncrypType"] = ap.get("EncrypType", "")
+                        elif c_idx == "1": 
+                            chip_payload["AccessPointSwitchStatus_5G"] = ap.get("AccessPointSwitchStatus", "1")
+                            chip_payload["SSID_5G"] = ap.get("SSID", "")
+                            chip_payload["ApIsolate_5G"] = ap.get("ApIsolate", "0")
+                            chip_payload["AuthMode_5G"] = ap.get("AuthMode", "")
+                            chip_payload["EncrypType_5G"] = ap.get("EncrypType", "")
+                
+                if is_merged:
+                    val = "0" if broadcast_merged else "1"
+                    chip_payload["ApBroadcastDisabled"] = val
+                    chip_payload["ApBroadcastDisabled_5G"] = val
+                else:
+                    chip_payload["ApBroadcastDisabled"] = "0" if broadcast_24g else "1"
+                    chip_payload["ApBroadcastDisabled_5G"] = "0" if broadcast_5g else "1"
+
+                await self._post_cmd_unlocked("setAccessPointInfo_24G_5G_ALL", chip_payload)
+                return True
+        except Exception as e:
+            logger.error(f"下发 SSID 广播状态时断网 (预期现象): {e}")
+            return True
 
     # 异步设置定时重启规则
     async def set_reboot_schedule(self, enable: bool, mode: str, hr: str, min: str, buffer: str, weeks: list, interval: str) -> bool:
@@ -402,14 +448,15 @@ class MU5001Client:
     # 异步切换网络模式
     async def switch_net_mode(self, mode_val: str, was_connected: bool) -> bool:
         try:
-            await self.post_cmd("DISCONNECT_NETWORK", {"notCallback": "true"})
-            await asyncio.sleep(NET_SWITCH_DELAY)
-            ok_set = await self.post_cmd("SET_BEARER_PREFERENCE", {API_KEY_WRITE: mode_val})
-            if was_connected:
+            async with self._request_lock:
+                await self._post_cmd_unlocked("DISCONNECT_NETWORK", {"notCallback": "true"})
                 await asyncio.sleep(NET_SWITCH_DELAY)
-                ok_connect = await self.post_cmd("CONNECT_NETWORK", {"notCallback": "true"})
-                return ok_set and ok_connect
-            return ok_set
+                ok_set = await self._post_cmd_unlocked("SET_BEARER_PREFERENCE", {API_KEY_WRITE: mode_val})
+                if was_connected:
+                    await asyncio.sleep(NET_SWITCH_DELAY)
+                    ok_connect = await self._post_cmd_unlocked("CONNECT_NETWORK", {"notCallback": "true"})
+                    return ok_set and ok_connect
+                return ok_set
         except Exception as e:
             logger.error(f"切换网络模式异常: {e}")
             return False
@@ -447,7 +494,7 @@ class MU5001Client:
     # 异步获取并清洗实时状态数据
     async def get_realtime_status(self) -> RealtimeStatus:
         cmd = (
-            "battery_value,battery_charging,network_type,wan_ipaddr,Z5g_rsrp,Z5g_SINR,"
+            "battery_value,battery_charging,network_type,wan_ipaddr,imei,imsi,sim_imsi,Z5g_rsrp,Z5g_SINR,"
             "nr5g_pci,nr5g_action_channel,pm_sensor_mdm,battery_temp,pm_sensor_pa1,"
             "realtime_tx_thrpt,realtime_rx_thrpt,realtime_tx_bytes,realtime_rx_bytes,"
             "monthly_tx_bytes,monthly_rx_bytes,wan_active_band,nr5g_action_band,"
@@ -458,14 +505,18 @@ class MU5001Client:
         res = await self.get_cmd(cmd, multi_data=True)
         
         macs_count = 0
+        connected_devices = []
         try:
             wifi_res = await self.get_cmd("station_list")
             lan_res = await self.get_cmd("lan_station_list")
-            macs = {
-                d.get("mac_addr", "").strip().upper()
-                for d in wifi_res.get("station_list", []) + lan_res.get("lan_station_list", [])
-                if d.get("mac_addr")
-            }
+            macs = set()
+            for d in wifi_res.get("station_list", []) + lan_res.get("lan_station_list", []):
+                mac = d.get("mac_addr", "").strip().upper()
+                if mac and mac not in macs:
+                    macs.add(mac)
+                    name = d.get("hostname", "").strip() or "未知设备"
+                    ip = d.get("ip_addr", "").strip() or "未知 IP"
+                    connected_devices.append({"name": name, "ip": ip})
             macs_count = len(macs)
         except Exception:
             pass
@@ -478,6 +529,8 @@ class MU5001Client:
             battery_percent=str(res.get('battery_value', '?')),
             is_charging=str(res.get('battery_charging', '')) in ['1', '2'],
             wan_ip=res.get('wan_ipaddr', '未分配'),
+            imei=str(res.get('imei', '')).strip(),
+            imsi=str(res.get('sim_imsi', '') or res.get('imsi', '')).strip(),
             conn_time_sec=int(res.get("realtime_time", 0)) if str(res.get("realtime_time", 0)).isdigit() else 0,
             tx_speed=safe_float(res.get('realtime_tx_thrpt', 0)),
             rx_speed=safe_float(res.get('realtime_rx_thrpt', 0)),
@@ -505,7 +558,8 @@ class MU5001Client:
             temp_pa=str(res.get('pm_sensor_pa1', '--')),
             is_data_connected="connected" in status_str,
             active_band_5g=str(res.get('nr5g_action_band', '')).strip(), 
-            active_band_4g=str(res.get('wan_active_band', '')).strip()
+            active_band_4g=str(res.get('wan_active_band', '')).strip(),
+            connected_devices=connected_devices
         )
     async def login(self, ip: str, password: str) -> bool:
         logger.info(f"开始登录设备: {ip}")
@@ -746,17 +800,23 @@ class LoginView(ft.Container):
                     except Exception:
                         pass
                         
-                self.login_status.value = "解锁开发者权限..."
+                self.login_status.value = "解锁开发者模式..."
                 self.update()
-                await self.api_client.unlock_developer()
-                show_toast(self.app_page, "登录成功", True)
+                # 获取返回值并进行判断
+                dev_ok = await self.api_client.unlock_developer()
+                if dev_ok:
+                    show_toast(self.app_page, "登录成功，开发者模式已解锁", True)
+                else:
+                    # 使用 False 触发 error_container 的底色，给用户明显的警示
+                    show_toast(self.app_page, "登录成功，开发者模式解锁失败", False)  
                 await self.on_login_success()
             else:
                 await self.clear_credentials_and_reset(is_error=True)
                 self.login_status.value = "密码错误或账号锁定"
                 self.login_status.color = ft.Colors.ERROR
                 show_toast(self.app_page, "密码错误或账号锁定", False)
-        except Exception:
+        except Exception as e:
+            logger.error(f"登录异常，请检查地址和网络: {e}", exc_info=DEBUG_MODE)
             await self.clear_credentials_and_reset(is_error=True)
             self.login_status.value = "连接失败，请检查地址和网络"
             self.login_status.color = ft.Colors.ERROR
@@ -791,24 +851,35 @@ class LoginView(ft.Container):
 class StatusCard(ft.Container):
     def __init__(self):
         super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
-        self.is_small = False  # 记录当前是否为小屏幕
-        self._last_data_hash = {}  # 维护每个文本控件最后一次渲染的值，用于 Diff 优化
+        self.is_small = False
+        self._last_data_hash = {}
 
-        # 1. 基础网络信息
         self.txt_provider = ft.Text("运营商: --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_battery = ft.Text("电量: --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_network = ft.Text("网络: --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_conn_time = ft.Text("连接时长: --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_wan_ip = ft.Text("WAN IP: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_imei = ft.Text("IMEI: --", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_imsi = ft.Text("IMSI: --", size=14, color=ft.Colors.ON_SURFACE)
         
-        # 2. 流量与设备信息
-        self.txt_users = ft.Text("接入设备: --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_tx_speed = ft.Text("上传速度: --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_rx_speed = ft.Text("下载速度: --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_traffic_rt = ft.Text("本次流量: --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_traffic_mo = ft.Text("当月流量: --", size=14, color=ft.Colors.ON_SURFACE)
         
-        # 3. 射频信息
+        # 设备列表相关
+        self.txt_device_label = ft.Text("设备列表:", size=14, color=ft.Colors.ON_SURFACE)
+        self.txt_device_count = ft.Text("0 台", size=14, color=ft.Colors.ON_SURFACE)
+        self.is_expanded = False
+        self.toggle_text = ft.Text("展开", size=14, color=ft.Colors.PRIMARY, weight=ft.FontWeight.BOLD)
+        self.toggle_btn = ft.Container(
+            content=self.toggle_text,
+            on_click=self.toggle_device_list,
+            visible=False,
+            padding=ft.Padding.symmetric(horizontal=5, vertical=2)
+        )
+        self.device_list_col = ft.Column(spacing=4)
+        
         self.txt_freq = ft.Text("ARFCN (小区频点): --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_pci = ft.Text("PCI (物理小区标识): --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_ecellid = ft.Text("eCellID (小区编号): --", size=14, color=ft.Colors.ON_SURFACE)
@@ -817,33 +888,56 @@ class StatusCard(ft.Container):
         self.txt_sinr = ft.Text("SINR (信噪比): --", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_rssi = ft.Text("RSSI (接收总功率): --", size=14, color=ft.Colors.ON_SURFACE)
         
-        # 4. 温度与状态
         self.txt_temp_bat = ft.Text("电池温度: --℃", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_temp_mdm = ft.Text("4G Modem: --℃", size=14, color=ft.Colors.ON_SURFACE)
         self.txt_temp_pa = ft.Text("PA: --℃", size=14, color=ft.Colors.ON_SURFACE)
         self.status_text = ft.Text("", color=ft.Colors.ON_SURFACE)
         
-        # 重新排版
+        block1 = ft.ResponsiveRow([
+            ft.Container(ft.Column([self.txt_provider, self.txt_battery, self.txt_network, self.txt_conn_time], spacing=6), col={"sm": 12, "md": 6}),
+            ft.Container(ft.Column([self.txt_wan_ip, self.txt_imei, self.txt_imsi], spacing=6), col={"sm": 12, "md": 6})
+        ])
+        
+        block2 = ft.ResponsiveRow([
+            ft.Container(ft.Column([self.txt_tx_speed, self.txt_rx_speed, self.txt_traffic_rt, self.txt_traffic_mo], spacing=6), col={"sm": 12, "md": 6}),
+            ft.Container(ft.Column([ft.Row([self.txt_device_label, self.txt_device_count, self.toggle_btn], wrap=True, spacing=10), self.device_list_col], spacing=6), col={"sm": 12, "md": 6})
+        ])
+        
+        block3 = ft.ResponsiveRow([
+            ft.Container(ft.Column([self.txt_freq, self.txt_pci, self.txt_ecellid], spacing=6), col={"sm": 12, "md": 6}),
+            ft.Container(ft.Column([self.txt_rsrp, self.txt_rsrq, self.txt_sinr, self.txt_rssi], spacing=6), col={"sm": 12, "md": 6})
+        ])
+        
+        block4 = ft.ResponsiveRow([
+            ft.Container(ft.Column([self.txt_temp_bat, self.txt_temp_mdm], spacing=6), col={"sm": 12, "md": 6}),
+            ft.Container(ft.Column([self.txt_temp_pa], spacing=6), col={"sm": 12, "md": 6})
+        ])
+
         self.content = ft.Column([
-            self.txt_provider, self.txt_battery, self.txt_network, self.txt_conn_time, self.txt_wan_ip,
+            block1,
             ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
-            self.txt_tx_speed, self.txt_rx_speed, self.txt_traffic_rt, self.txt_traffic_mo, self.txt_users,
+            block2,
             ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
-            self.txt_freq, self.txt_pci, self.txt_ecellid, self.txt_rsrp, self.txt_rsrq, self.txt_sinr, self.txt_rssi,
+            block3,
             ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
-            self.txt_temp_bat, self.txt_temp_mdm, self.txt_temp_pa,
+            block4,
             ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
             self.status_text
-        ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+
+    def toggle_device_list(self, e):
+        self.is_expanded = not self.is_expanded
+        self.toggle_text.value = "收起" if self.is_expanded else "展开"
+        for i, ctrl in enumerate(self.device_list_col.controls):
+            ctrl.visible = True if self.is_expanded or i < 3 else False
+        self.update()
 
     def set_global_status(self, text: str, color: str):
-        # Diff 优化：状态栏文本或颜色发生变化时才触发重绘
         if self.status_text.value != text or self.status_text.color != color:
             self.status_text.value = text
             self.status_text.color = color
             self.update()
 
-    # 核心 Diff 函数：对比新旧值，只有变化时才赋值并标记脏数据
     def _update_field(self, ctrl: ft.Text, new_val: str) -> bool:
         ctrl_id = id(ctrl)
         if self._last_data_hash.get(ctrl_id) != new_val:
@@ -853,75 +947,51 @@ class StatusCard(ft.Container):
         return False
 
     def update_realtime(self, status: 'RealtimeStatus'):
-        sep = "\n" if self.is_small else " "
+        sep = " "
         has_changes = False
 
-        # 运营商与电量
         if self._update_field(self.txt_provider, f"运营商:{sep}{status.provider or '--'}"): has_changes = True
         
         charge = "充电中" if status.is_charging else "未充电"
         if self._update_field(self.txt_battery, f"电量:{sep}{status.battery_percent}% ({charge})"): has_changes = True
         
-        # 网络与频段
-        band_display = ""
-        net_type_upper = status.network_type.upper()
-        
-        is_sa = "SA" in net_type_upper and "NSA" not in net_type_upper
-        is_nsa = "NSA" in net_type_upper
-
-        # 处理并清洗 4G 频段
         lte_bands = []
         if status.active_band_4g:
             for b in status.active_band_4g.split(','):
                 num = ''.join(filter(str.isdigit, b))
-                if num:
-                    lte_bands.append(f"B{num}")
-                elif b.strip():
-                    lte_bands.append(b.strip())
+                if num: lte_bands.append(f"B{num}")
+                elif b.strip(): lte_bands.append(b.strip())
             
-        # 处理并清洗 5G 频段
         nr_bands = []
         if status.active_band_5g:
             for b in status.active_band_5g.split(','):
                 num = ''.join(filter(str.isdigit, b))
-                if num:
-                    nr_bands.append(f"n{num}")
-                elif b.strip():
-                    nr_bands.append(b.strip())
+                if num: nr_bands.append(f"n{num}")
+                elif b.strip(): nr_bands.append(b.strip())
 
-        # 核心修复：根据网络模式正确决定频段组合，避免 NSA 锚点丢失或 SA 幽灵数据
-        display_bands = []
-        if is_sa:
-            # 纯 SA 模式：严格抛弃 4G 锚点残留数据，仅使用 5G 频段
-            display_bands = nr_bands
-        elif is_nsa:
-            # NSA 模式：合并 4G 锚点与 5G 射频频段
-            display_bands = lte_bands + nr_bands
-        else:
-            # 纯 4G/3G 模式
-            display_bands = lte_bands
+        net_type_upper = status.network_type.upper()
+        is_sa = "SA" in net_type_upper and "NSA" not in net_type_upper
+        is_nsa = "NSA" in net_type_upper
 
-        # 过滤空值并去重
+        display_bands = nr_bands if is_sa else (lte_bands + nr_bands if is_nsa else lte_bands)
         valid_bands = []
         for b in display_bands:
             if b and b not in valid_bands:
                 valid_bands.append(b)
 
-        # 拼接成带括号的字符串
-        if valid_bands:
-            band_display = f" ({' + '.join(valid_bands)})"
+        band_display = f" ({' + '.join(valid_bands)})" if valid_bands else ""
 
         net_str = f"网络:{sep}{status.network_type}{band_display}"
         if self._update_field(self.txt_network, net_str): has_changes = True
         if self._update_field(self.txt_wan_ip, f"WAN IP:{sep}{status.wan_ip}"): has_changes = True
+        if self._update_field(self.txt_imei, f"IMEI:{sep}{status.imei or '--'}"): has_changes = True
+        if self._update_field(self.txt_imsi, f"IMSI:{sep}{status.imsi or '--'}"): has_changes = True
         
-        # 连接时长
         hours, rem = divmod(status.conn_time_sec, 3600)
         minutes, seconds = divmod(rem, 60)
         time_str = f"连接时长:{sep}{hours:02d}:{minutes:02d}:{seconds:02d}" if status.conn_time_sec > 0 else f"连接时长:{sep}--"
         if self._update_field(self.txt_conn_time, time_str): has_changes = True
 
-        # 网速与流量
         if self._update_field(self.txt_tx_speed, f"上传速度:{sep}{format_bytes(status.tx_speed)}/s"): has_changes = True
         if self._update_field(self.txt_rx_speed, f"下载速度:{sep}{format_bytes(status.rx_speed)}/s"): has_changes = True
         
@@ -929,9 +999,36 @@ class StatusCard(ft.Container):
         mo_total = status.tx_bytes_mo + status.rx_bytes_mo
         if self._update_field(self.txt_traffic_rt, f"本次流量:{sep}{format_bytes(rt_total)}"): has_changes = True
         if self._update_field(self.txt_traffic_mo, f"当月流量:{sep}{format_bytes(mo_total)}"): has_changes = True
-        if self._update_field(self.txt_users, f"接入设备:{sep}{status.macs_count} 台"): has_changes = True
+        
+        if self._update_field(self.txt_device_count, f"{status.macs_count} 台"): has_changes = True
 
-        # 射频参数
+        dev_hash = str(status.connected_devices)
+        if self._last_data_hash.get('device_list') != dev_hash:
+            self.device_list_col.controls.clear()
+            if not status.connected_devices:
+                self.toggle_btn.visible = False
+                self.device_list_col.controls.append(
+                    ft.Text("暂无设备连接", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
+                )
+            else:
+                self.toggle_btn.visible = True
+                self.toggle_text.value = "收起" if self.is_expanded else "展开"
+                for i, dev in enumerate(status.connected_devices):
+                    self.device_list_col.controls.append(
+                        ft.Row(
+                            [
+                                ft.Text(f"{dev['name']}:", size=14, color=ft.Colors.ON_SURFACE),
+                                ft.Text(dev['ip'], size=14, color=ft.Colors.ON_SURFACE)
+                            ],
+                            wrap=True,
+                            spacing=4,
+                            run_spacing=0,
+                            visible=(True if self.is_expanded or i < 3 else False)
+                        )
+                    )
+            self._last_data_hash['device_list'] = dev_hash
+            has_changes = True
+
         if self._update_field(self.txt_freq, f"ARFCN (小区频点):{sep}{status.arfcn or '--'}"): has_changes = True
         
         display_pci_5g = parse_hex_safe(status.pci_5g)
@@ -943,18 +1040,13 @@ class StatusCard(ft.Container):
         if self._update_field(self.txt_sinr, f"SINR (信噪比):{sep}{status.sinr_5g or status.sinr_4g or '--'} dB"): has_changes = True
         if self._update_field(self.txt_rssi, f"RSSI (接收总功率):{sep}{status.rssi_5g or status.rssi_4g or '--'} dBm"): has_changes = True
 
-        # eCellID 计算逻辑
         mcc_mnc = normalize_plmn(status.mcc_mnc)
-        if mcc_mnc in CMCC_PLMNS:
-            is_14bit_provider = True
-        elif mcc_mnc in CU_CT_PLMNS:
-            is_14bit_provider = False
-        else:
-            is_14bit_provider = any(k in status.provider for k in CMCC_KEYS)
+        if mcc_mnc in CMCC_PLMNS: is_14bit_provider = True
+        elif mcc_mnc in CU_CT_PLMNS: is_14bit_provider = False
+        else: is_14bit_provider = any(k in status.provider for k in CMCC_KEYS)
 
         nr_cell_bits = 14 if is_14bit_provider else 12
         ecellid_str = f"eCellID (小区编号):{sep}--"
-
         is_5g = any(k in status.network_type.upper() for k in ['5G', 'SA', 'NSA'])
 
         if is_5g and status.cell_id_5g and status.cell_id_5g != "0":
@@ -980,8 +1072,6 @@ class StatusCard(ft.Container):
                     ecellid_str = f"eCellID (小区编号):{sep}{status.cell_id_4g}"
         
         if self._update_field(self.txt_ecellid, ecellid_str): has_changes = True
-
-        # 温度
         if self._update_field(self.txt_temp_bat, f"电池温度:{sep}{status.temp_bat}℃"): has_changes = True
         if self._update_field(self.txt_temp_mdm, f"4G Modem:{sep}{status.temp_mdm}℃"): has_changes = True
         if self._update_field(self.txt_temp_pa, f"PA:{sep}{status.temp_pa}℃"): has_changes = True
@@ -1066,7 +1156,7 @@ class RebootCard(ft.Container):
         self.content = ft.Column([
             ft.Text("定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
             self.txt_local_time, ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
-            ft.Row([self.reboot_enable, ft.Text("定时重启", color=ft.Colors.INVERSE_PRIMARY)], vertical_alignment=ft.CrossAxisAlignment.CENTER), 
+            ft.Row([self.reboot_enable, ft.Text("定时重启", color=ft.Colors.INVERSE_PRIMARY)], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True), 
             self.reboot_hint,
             
             self.time_container,  # 响应式容器
@@ -1123,7 +1213,8 @@ class RebootCard(ft.Container):
                 self.set_global_status("定时重启状态切换失败", ft.Colors.ERROR)
                 show_toast(self.app_page, "状态切换失败", False)
                 self.reboot_enable.value = not is_on
-        except Exception:
+        except Exception as e:
+            logger.error(f"定时重启开关异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("定时重启状态切换异常", ft.Colors.ERROR)
             show_toast(self.app_page, "状态切换异常", False)
             self.reboot_enable.value = not is_on
@@ -1144,7 +1235,8 @@ class RebootCard(ft.Container):
             else:
                 self.set_global_status("保存失败，请检查连接状态", ft.Colors.ERROR)
                 show_toast(self.app_page, "定时重启配置保存失败", False)
-        except Exception:
+        except Exception as e:
+            logger.error(f"保存重启规则异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("保存失败", ft.Colors.ERROR)
         self.update()
 
@@ -1153,7 +1245,7 @@ class RebootCard(ft.Container):
 # ==========================================
 class SettingsCard(ft.Container):
     def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable, on_reboot_cb: Callable):
-        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
+        super().__init__()
         self.app_page = page 
         self.api_client = client
         self.set_global_status = set_global_status_cb
@@ -1240,27 +1332,27 @@ class SettingsCard(ft.Container):
         # 提取公共的文字样式，跟随主题的 ON_SURFACE 颜色变化
         lbl_style = ft.TextStyle(color=ft.Colors.ON_SURFACE)
 
-        # 上下排列，间距(spacing=5)
+        # 横向自动折行排列
         self.wifi_mode = ft.RadioGroup(
-            value="merged",  # 赋默认初始值，防止初次渲染为空
-            content=ft.Column([
-                ft.Radio(value="merged", label="双频合一", fill_color=ft.Colors.PRIMARY, label_style=lbl_style),
-                ft.Radio(value="separated", label="双频分离", fill_color=ft.Colors.PRIMARY, label_style=lbl_style)
-            ], spacing=5),
+            value="merged",
+            content=ft.Row([
+                ft.Container(content=ft.Radio(value="merged", label="双频合一", fill_color=ft.Colors.PRIMARY, label_style=lbl_style), width=120, padding=0, margin=0),
+                ft.Container(content=ft.Radio(value="separated", label="双频分离", fill_color=ft.Colors.PRIMARY, label_style=lbl_style), width=120, padding=0, margin=0)
+            ], wrap=True, spacing=10, run_spacing=0),
             on_change=self.on_wifi_mode_change
         )
         
-        # 三个复选框：合一时的单选，分离时的双选（加上 label_style）
+        # 三个复选框
         self.cb_broadcast_merged = ft.Checkbox(
-            label="开启 SSID", value=True, label_style=lbl_style,
+            label="WiFi 广播", value=True, label_style=lbl_style,
             fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
         )
         self.cb_broadcast_24g = ft.Checkbox(
-            label="2.4GHz SSID", value=True, label_style=lbl_style,
+            label="2.4GHz", value=True, label_style=lbl_style,
             fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
         )
         self.cb_broadcast_5g = ft.Checkbox(
-            label="5GHz SSID", value=True, label_style=lbl_style,
+            label="5GHz", value=True, label_style=lbl_style,
             fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
         )
         
@@ -1270,22 +1362,45 @@ class SettingsCard(ft.Container):
             wrap=True, spacing=10, run_spacing=5
         )
         
+        btn_apply_mode = create_button("应用双频设置", on_click=self.on_apply_wifi_mode)
+        btn_apply_broadcast = create_button("应用广播设置", on_click=self.on_apply_wifi_broadcast)
+
         wifi_mode_container = ft.Column([
             self.wifi_mode,
-            self.broadcast_controls
-        ], spacing=10)
+            btn_apply_mode,
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+            self.broadcast_controls,
+            btn_apply_broadcast
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
         
-        btn_wifi_radio_apply = create_button("应用 WiFi 设置", on_click=self.on_apply_wifi_radio)
+        # 设为隐藏的占位符，防止页面下方的排版代码报错
+        btn_wifi_radio_apply = ft.Container(height=0)
         
         # WiFi 覆盖范围
-        self.wifi_coverage = ft.RadioGroup(
-            value="short_mode", # 默认近距离
-            content=ft.Row([
-                ft.Radio(value="short_mode", label="近距离", fill_color=ft.Colors.PRIMARY, label_style=lbl_style),
-                ft.Radio(value="medium_mode", label="中距离", fill_color=ft.Colors.PRIMARY, label_style=lbl_style),
-                ft.Radio(value="long_mode", label="远距离", fill_color=ft.Colors.PRIMARY, label_style=lbl_style)
-            ], wrap=True, spacing=15),
-        )
+        self.wifi_coverage_cbs = {}
+        
+        def on_coverage_change(e):
+            if e.control.value:
+                # 勾选其中一个时，取消其他勾选
+                for cb in self.wifi_coverage_cbs.values():
+                    if cb is not e.control:
+                        cb.value = False
+            else:
+                # 防止全部取消，必须保留一个勾
+                e.control.value = True 
+            self.update()
+
+        coverage_options = {"short_mode": "近距离", "medium_mode": "中距离", "long_mode": "远距离"}
+        cov_controls = []
+        for val, label in coverage_options.items():
+            cb = ft.Checkbox(
+                label=label, value=(val == "short_mode"), on_change=on_coverage_change,
+                label_style=lbl_style, fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
+            )
+            self.wifi_coverage_cbs[val] = cb
+            cov_controls.append(ft.Container(content=cb, width=100, padding=0, margin=0))
+            
+        self.wifi_coverage_row = ft.Row(controls=cov_controls, wrap=True, spacing=10, run_spacing=0)
         btn_wifi_coverage_apply = create_button("应用 WiFi 覆盖范围", on_click=self.on_apply_wifi_coverage)
         
         # 数据连接开关
@@ -1350,44 +1465,65 @@ class SettingsCard(ft.Container):
         btn_cell_unlock = create_button("清除锁定", on_click=self.on_cell_unlock, expand=True)
         btn_cell_reboot = create_button("重启设备", on_click=self.on_reboot_device, expand=True)
 
-        self.content = ft.Column([
-            ft.Text("高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-            ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
-            ft.Text("WiFi 省电休眠", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-            self.wifi_sleep, btn_wifi_sleep, ft.Container(height=15),
+        # WiFi 设置专属卡片
+        wifi_section = ft.Container(
+            padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12,
+            content=ft.Column([
+                ft.Text("WiFi 设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
+                ft.Text("WiFi 省电休眠", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                self.wifi_sleep, btn_wifi_sleep, ft.Container(height=15),
 
-            # WiFi 设置
-            ft.Column([
-                ft.Text("WiFi 设置", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-                ft.Text("应用后需重新连接 WiFi", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
-            ], spacing=2),
-            wifi_mode_container, btn_wifi_radio_apply, ft.Container(height=15),
+                ft.Column([
+                    ft.Text("WiFi 频段设置", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                    ft.Text("应用后需重新连接 WiFi", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+                ], spacing=2),
+                wifi_mode_container, btn_wifi_radio_apply, ft.Container(height=15),
 
-            # WiFi 覆盖范围
-            ft.Text("WiFi 覆盖范围", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-            self.wifi_coverage, btn_wifi_coverage_apply, ft.Container(height=15),
+                ft.Text("WiFi 覆盖范围", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                self.wifi_coverage_row, btn_wifi_coverage_apply
+            ], spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        )
 
-            # 网络模式锁定，数据连接开关
-            ft.Text("网络模式锁定", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-            ft.Row([self.data_switch, ft.Text("数据连接", color=ft.Colors.INVERSE_PRIMARY)], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            net_mode_grid, self.btn_net_mode_apply, ft.Container(height=15),
-            
-            ft.Column([
-                ft.Text("网络频段锁定", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-                ft.Text("每项至少保留一个频段", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
-            ], spacing=2),
-            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
-            ft.Text("4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
-            lte_grid, btn_lte_apply, ft.Container(height=10),
-            ft.Text("5G SA 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
-            sa_grid, btn_sa_apply, ft.Container(height=10),
-            ft.Text("5G NSA 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
-            nsa_grid, btn_nsa_apply, ft.Container(height=10),
-            ft.Text("5G 锁定小区", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
-            row_pci, row_earfcn, row_band, row_scs, cell_tip, btn_cell_apply,
-            ft.Row([btn_cell_unlock, btn_cell_reboot], spacing=10),
-        ], spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        # 高级网络设置专属卡片
+        adv_network_section = ft.Container(
+            padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12,
+            content=ft.Column([
+                ft.Text("高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
+                
+                ft.Text("网络模式锁定", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                ft.Row([self.data_switch, ft.Text("数据连接", color=ft.Colors.INVERSE_PRIMARY)], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+                net_mode_grid, self.btn_net_mode_apply, ft.Container(height=15),
+                
+                ft.Column([
+                    ft.Text("网络频段锁定", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                    ft.Text("每项至少保留一个频段", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+                ], spacing=2),
+                ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+                ft.Text("4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
+                lte_grid, btn_lte_apply, ft.Container(height=10),
+                ft.Text("5G SA 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
+                sa_grid, btn_sa_apply, ft.Container(height=10),
+                ft.Text("5G NSA 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
+                nsa_grid, btn_nsa_apply, ft.Container(height=10),
+                ft.Text("锁定小区", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+                row_pci, row_earfcn, row_band, row_scs, cell_tip, btn_cell_apply,
+                
+                ft.ResponsiveRow([
+                    ft.Container(btn_cell_unlock, col={"xs": 12, "sm": 6}),
+                    ft.Container(btn_cell_reboot, col={"xs": 12, "sm": 6})
+                ], spacing=10, run_spacing=10)
+            ], spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        )
+
+        # 组装卡片
+        self.content = ft.Column(
+            [wifi_section, adv_network_section], 
+            spacing=30,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH
+        )
 
     def update_config(self, res: dict, sa_raw: str, nsa_raw: str, current_net_mode: str):
         # WiFi 休眠
@@ -1431,7 +1567,8 @@ class SettingsCard(ft.Container):
         # WiFi 覆盖范围回显
         cov_val = str(res.get("WiFiCoverage", "")).strip()
         if cov_val in ["short_mode", "medium_mode", "long_mode"]:
-            self.wifi_coverage.value = cov_val
+            for val, cb in self.wifi_coverage_cbs.items():
+                cb.value = (val == cov_val)
 
         # WiFi 频段及广播状态回显
         wifi_lbd = str(res.get("wifi_lbd_enable", "")).strip()
@@ -1523,7 +1660,8 @@ class SettingsCard(ft.Container):
                 self.set_global_status("数据状态切换失败", ft.Colors.ERROR)
                 show_toast(self.app_page, "数据状态切换失败", False)
                 self.data_switch.value = not is_on
-        except Exception:
+        except Exception as e:
+            logger.error(f"数据状态切换异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("数据状态切换异常", ft.Colors.ERROR)
             show_toast(self.app_page, "数据状态切换异常", False)
             self.data_switch.value = not is_on
@@ -1541,7 +1679,8 @@ class SettingsCard(ft.Container):
             else:
                 self.set_global_status("保存失败", ft.Colors.ERROR)
                 show_toast(self.app_page, "WiFi 休眠设置保存失败", False)
-        except Exception:
+        except Exception as e:
+            logger.error(f"保存WiFi休眠异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("保存失败", ft.Colors.ERROR)
         self.update()
 
@@ -1554,9 +1693,10 @@ class SettingsCard(ft.Container):
                 self.set_global_status("4G 频段设置完成", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "4G 频段设置成功", True)
             else:
-                self.set_global_status("设置失败，请确认开发者权限已解锁", ft.Colors.ERROR)
-                show_toast(self.app_page, "4G 频段设置失败，请确认开发者权限", False)
-        except Exception:
+                self.set_global_status("设置失败，请确认开发者模式已解锁", ft.Colors.ERROR)
+                show_toast(self.app_page, "4G 频段设置失败，请确认开发者模式已解锁", False)
+        except Exception as e:
+            logger.error(f"4G 频段设置异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("设置失败", ft.Colors.ERROR)
         self.update()
 
@@ -1569,9 +1709,10 @@ class SettingsCard(ft.Container):
                 self.set_global_status("5G SA 频段设置完成", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "5G SA 频段设置成功", True)
             else:
-                self.set_global_status("设置失败，请确认开发者权限已解锁", ft.Colors.ERROR)
-                show_toast(self.app_page, "5G SA 频段设置失败，请确认开发者权限", False)
-        except Exception:
+                self.set_global_status("设置失败，请确认开发者模式已解锁", ft.Colors.ERROR)
+                show_toast(self.app_page, "5G SA 频段设置失败，请确认开发者模式已解锁", False)
+        except Exception as e:
+            logger.error(f"5G SA 设置异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("设置失败", ft.Colors.ERROR)
         self.update()
 
@@ -1584,9 +1725,10 @@ class SettingsCard(ft.Container):
                 self.set_global_status("5G NSA 频段设置完成", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "5G NSA 频段设置成功", True)
             else:
-                self.set_global_status("设置失败，请确认开发者权限已解锁", ft.Colors.ERROR)
-                show_toast(self.app_page, "5G NSA 频段设置失败，请确认开发者权限", False)
-        except Exception:
+                self.set_global_status("设置失败，请确认开发者模式已解锁", ft.Colors.ERROR)
+                show_toast(self.app_page, "5G NSA 频段设置失败，请确认开发者模式已解锁", False)
+        except Exception as e:
+            logger.error(f"5G NSA 设置异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("设置失败", ft.Colors.ERROR)
         self.update()
 
@@ -1602,9 +1744,10 @@ class SettingsCard(ft.Container):
                 self.set_global_status("锁小区配置下发完成", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "锁小区成功", True)
             else:
-                self.set_global_status("锁小区失败，请确认开发者权限已解锁", ft.Colors.ERROR)
-                show_toast(self.app_page, "锁小区失败，请确认开发者权限", False)
-        except Exception:
+                self.set_global_status("锁小区失败，请确认开发者模式已解锁", ft.Colors.ERROR)
+                show_toast(self.app_page, "锁小区失败，请确认开发者模式已解锁", False)
+        except Exception as e:
+            logger.error(f"锁小区异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("锁小区失败", ft.Colors.ERROR)
         self.update()
 
@@ -1618,9 +1761,10 @@ class SettingsCard(ft.Container):
                 self.set_global_status("小区锁定已解除", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "小区锁定已解除", True)
             else:
-                self.set_global_status("解除失败，请确认开发者权限已解锁", ft.Colors.ERROR)
+                self.set_global_status("解除失败，请确认开发者模式已解锁", ft.Colors.ERROR)
                 show_toast(self.app_page, "解除锁定失败", False)
-        except Exception:
+        except Exception as e:
+            logger.error(f"解锁小区异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("解除失败", ft.Colors.ERROR)
         self.update()
 
@@ -1656,86 +1800,104 @@ class SettingsCard(ft.Container):
 
     # 应用 WiFi 覆盖范围
     async def on_apply_wifi_coverage(self, e):
+        selected_val = "short_mode"
+        for val, cb in self.wifi_coverage_cbs.items():
+            if cb.value:
+                selected_val = val
+                break
+                
         show_toast(self.app_page, "正在应用 WiFi 覆盖范围...", True)
         try:
-            if await self.api_client.set_wifi_coverage(self.wifi_coverage.value):
+            if await self.api_client.set_wifi_coverage(selected_val):
                 self.set_global_status("WiFi 范围设置成功", ft.Colors.PRIMARY)
                 show_toast(self.app_page, "WiFi 范围设置成功", True)
             else:
                 self.set_global_status("WiFi 范围设置失败", ft.Colors.ERROR)
                 show_toast(self.app_page, "WiFi 范围设置失败", False)
-        except Exception:
+        except Exception as e:
+            logger.error(f"WiFi覆盖设置异常: {e}", exc_info=DEBUG_MODE)
             self.set_global_status("设置异常", ft.Colors.ERROR)
         self.update()
 
     # 执行 WiFi 设置的实际逻辑
-    async def _execute_apply_wifi_radio(self):
+    async def _execute_apply_wifi_mode(self):
         mode = self.wifi_mode.value
-        if not mode:
-            show_toast(self.app_page, "请选择 WiFi 模式", False)
-            return
-
-        show_toast(self.app_page, "正在应用 WiFi 设置...", True)
+        if not mode: return
+        show_toast(self.app_page, "正在切换双频模式...", True)
+        self.update()
+        success = await self.api_client.apply_wifi_mode(is_merged=(mode == "merged"))
+        if success:
+            self.set_global_status("模式已切换，WiFi 将重启，请等待重连", ft.Colors.PRIMARY)
+            show_toast(self.app_page, "模式切换成功，等待断网重连", True)
+        else:
+            show_toast(self.app_page, "执行失败，请检查网络", False)
         self.update()
 
-        is_merged = (mode == "merged")
-        await self.api_client.apply_wifi_settings(
-            is_merged=is_merged,
+    async def on_apply_wifi_mode(self, e):
+        async def close_dlg(e):
+            dlg.open = False
+            self.app_page.update()
+        async def confirm_dlg(e):
+            dlg.open = False
+            self.app_page.update()
+            await self._execute_apply_wifi_mode()
+            
+        dlg = ft.AlertDialog(
+            bgcolor=ft.Colors.SURFACE, title_padding=ft.Padding(0,0,0,0), content_padding=ft.Padding(0,0,0,0), actions_padding=ft.Padding(0,0,0,0), inset_padding=ft.Padding(10, 24, 10, 24),
+            content=ft.Container(
+                height=70, alignment=ft.Alignment(0, 0), padding=ft.Padding(10, 0, 10, 0),
+                content=ft.Row(
+                    controls=[
+                        ft.Container(content=ft.TextButton("取消", on_click=close_dlg, style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT)), expand=True, alignment=ft.Alignment(0, 0)),
+                        ft.Container(content=ft.TextButton("确认", on_click=confirm_dlg, style=ft.ButtonStyle(color=ft.Colors.PRIMARY)), expand=True, alignment=ft.Alignment(0, 0)),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=5
+                )
+            )
+        )
+        self.app_page.overlay.append(dlg)
+        dlg.open = True
+        self.app_page.update()
+
+    # 应用广播网络名称
+    async def _execute_apply_wifi_broadcast(self):
+        mode = self.wifi_mode.value
+        if not mode: return
+        show_toast(self.app_page, "正在应用广播设置...", True)
+        self.update()
+        success = await self.api_client.apply_wifi_broadcast(
+            is_merged=(mode == "merged"),
             broadcast_merged=self.cb_broadcast_merged.value,
             broadcast_24g=self.cb_broadcast_24g.value,
             broadcast_5g=self.cb_broadcast_5g.value
         )
-
-        # 由于 WiFi 重启会导致断网，请求抛出异常或返回 False 均视为命令已送达
-        self.set_global_status("WiFi 设置已更改，请重新连接 WiFi", ft.Colors.PRIMARY)
-        show_toast(self.app_page, "设置已更改，WiFi 将重启", True)
+        if success:
+            self.set_global_status("广播状态已更改，WiFi 将重启，请等待重连", ft.Colors.PRIMARY)
+            show_toast(self.app_page, "广播设置成功，等待断网重连", True)
+        else:
+            show_toast(self.app_page, "执行失败，请检查网络", False)
         self.update()
 
-    # WiFi 设置（二次确认弹窗）
-    async def on_apply_wifi_radio(self, e):
+    async def on_apply_wifi_broadcast(self, e):
         async def close_dlg(e):
             dlg.open = False
             self.app_page.update()
-
         async def confirm_dlg(e):
             dlg.open = False
             self.app_page.update()
-            await self._execute_apply_wifi_radio()
-
-        # WiFi 设置确认弹窗
+            await self._execute_apply_wifi_broadcast()
+            
         dlg = ft.AlertDialog(
-            bgcolor=ft.Colors.SURFACE,
-            title_padding=ft.Padding(0, 0, 0, 0),
-            content_padding=ft.Padding(0, 0, 0, 0),
-            actions_padding=ft.Padding(0, 0, 0, 0), # 干掉底部预留给 actions 的空白
-            
-            inset_padding=ft.Padding(10, 24, 10, 24),
-            
-            # 固定高度
+            bgcolor=ft.Colors.SURFACE, title_padding=ft.Padding(0,0,0,0), content_padding=ft.Padding(0,0,0,0), actions_padding=ft.Padding(0,0,0,0), inset_padding=ft.Padding(10, 24, 10, 24),
             content=ft.Container(
-                height=70,  # 锁死 70 像素的胶囊高度
-                alignment=ft.Alignment(0, 0),  # 绝对居中
-                padding=ft.Padding(10, 0, 10, 0),
+                height=70, alignment=ft.Alignment(0, 0), padding=ft.Padding(10, 0, 10, 0),
                 content=ft.Row(
                     controls=[
-                        ft.Container(
-                            content=ft.TextButton("取消", on_click=close_dlg, style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT)), 
-                            expand=True, 
-                            alignment=ft.Alignment(0, 0)
-                        ),
-                        ft.Container(
-                            content=ft.TextButton("确认", on_click=confirm_dlg, style=ft.ButtonStyle(color=ft.Colors.PRIMARY)), 
-                            expand=True, 
-                            alignment=ft.Alignment(0, 0)
-                        ),
-                    ],
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=5
+                        ft.Container(content=ft.TextButton("取消", on_click=close_dlg, style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT)), expand=True, alignment=ft.Alignment(0, 0)),
+                        ft.Container(content=ft.TextButton("确认", on_click=confirm_dlg, style=ft.ButtonStyle(color=ft.Colors.PRIMARY)), expand=True, alignment=ft.Alignment(0, 0)),
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=5
                 )
             )
         )
-        
-        # 将弹窗挂载到页面的浮层列表中
         self.app_page.overlay.append(dlg)
         dlg.open = True
         self.app_page.update()
@@ -1869,7 +2031,10 @@ class MU5001:
         scrollable_content = ft.Column(
             [
                 self.status_card,
-                ft.Row([btn_refresh, btn_reboot_top], spacing=10),
+                ft.ResponsiveRow([
+                    ft.Container(btn_refresh, col={"xs": 12, "sm": 6}),
+                    ft.Container(btn_reboot_top, col={"xs": 12, "sm": 6})
+                ], spacing=10, run_spacing=10),
                 ft.Container(height=10),
                 self.reboot_card,
                 ft.Container(height=10),
@@ -1901,7 +2066,8 @@ class MU5001:
             else:
                 self.status_card.set_global_status("重启失败", ft.Colors.ERROR)
                 show_toast(self.page, "设备重启失败", False)
-        except Exception:
+        except Exception as e:
+            logger.error(f"重启设备异常: {e}", exc_info=DEBUG_MODE)
             self.status_card.set_global_status("重启失败", ft.Colors.ERROR)
             show_toast(self.page, "设备重启失败", False)
 
@@ -2053,14 +2219,15 @@ class MU5001:
                 current_net_mode
             )
 
-            dev_status = " | 开发者已解锁" if self.device_state.dev_unlocked else " | 开发者未解锁"
+            dev_status = " | 开发者模式已解锁" if self.device_state.dev_unlocked else " | 开发者模式未解锁"
             self.status_card.set_global_status("数据读取成功" + dev_status, ft.Colors.PRIMARY if self.device_state.dev_unlocked else ft.Colors.ERROR)
             
             await self.fetch_realtime()
             if e:
                 show_toast(self.page, "数据刷新成功", True)
             logger.info("全量配置刷新完成")
-        except Exception:
+        except Exception as ex: # 注意这里用了 ex 防止和参数 e 冲突
+            logger.error(f"全量刷新异常: {ex}", exc_info=DEBUG_MODE)
             self.status_card.set_global_status("读取失败，请检查连接", ft.Colors.ERROR)
             if e:
                 show_toast(self.page, "数据读取失败，请检查连接", False)
@@ -2073,11 +2240,11 @@ class MU5001:
         self.start_auto_refresh()
 
     async def do_relogin(self, e=None):
-        # 拦截：网络模块正在5秒死锁期，严禁执行重登！
+        # 拦截：网络模块正在5秒死锁期，严禁执行重登
         if self.settings_card.is_switching_data:
             show_toast(self.page, "网络操作中，请稍后再重登", False)
             return
-            
+
         if not self.device_state.ip or not self.device_state.password:
             show_toast(self.page, "本地无缓存密码，请重启 APP", False)
             return
@@ -2091,21 +2258,22 @@ class MU5001:
                     self.settings_card.data_switch.value = True
                     self.settings_card.update()
                 except Exception as conn_err:
-                    logger.warning(f"重登后自动开启数据连接失败: {conn_err}")
+                    logger.warning(f"重登成功，开启数据连接失败: {conn_err}")
 
                 if dev_ok:
-                    self.status_card.set_global_status("重登成功并已解锁开发者权限", ft.Colors.PRIMARY)
-                    show_toast(self.page, "重登成功，开发者解锁成功，已尝试开启数据", True)
+                    self.status_card.set_global_status("重登成功，开发者模式解锁成功，正在开启数据连接", ft.Colors.PRIMARY)
+                    show_toast(self.page, "重登成功，开发者模式解锁成功，正在开启数据连接", True)
                 else:
-                    self.status_card.set_global_status("重登成功，开发者解锁失败", ft.Colors.ERROR)
-                    show_toast(self.page, "重登成功，但开发者解锁失败", False)
+                    self.status_card.set_global_status("重登成功，开发者模式解锁失败", ft.Colors.ERROR)
+                    show_toast(self.page, "重登成功，开发者模式解锁失败", False)
                 await self.refresh_all()
             else:
                 self.status_card.set_global_status("重新登录失败，可能密码已修改或被锁定", ft.Colors.ERROR)
                 show_toast(self.page, "重登失败", False)
-        except Exception:
-            self.status_card.set_global_status("重登连接失败，请检查网络", ft.Colors.ERROR)
-            show_toast(self.page, "连接失败，请检查网络", False)
+        except Exception as ex: # 注意这里用了 ex 防止和参数 e 冲突
+            logger.error(f"重新登录异常: {ex}", exc_info=DEBUG_MODE)
+            self.status_card.set_global_status("重登失败，请检查网络", ft.Colors.ERROR)
+            show_toast(self.page, "重登失败，请检查网络", False)
 
     async def do_logout(self, e=None):
         await self.client.close()
@@ -2160,10 +2328,12 @@ class MU5001:
         self.status_card.update()
         self.page.update()
 
-    def on_disconnect(self, e=None):
+    async def on_disconnect(self, e=None):
         if self.auto_refresh_task and not self.auto_refresh_task.done():
             self.auto_refresh_task.cancel()
-
+            
+        # 释放 HTTP 客户端底层的连接池资源
+        await self.client.close()
 # ==========================================
 # 应用运行入口
 # ==========================================

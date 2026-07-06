@@ -1260,6 +1260,7 @@ class SettingsCard(ft.Container):
         self.net_mode_cbs: Dict[str, ft.Checkbox] = {}
         self.wifi_mode_cbs: Dict[str, ft.Checkbox] = {}
         self.is_switching_data = False
+        self.actual_wifi_mode = "merged"
         self.build_ui()
 
     def _create_checkbox_grid(self, bands: List[str], prefix: str, selected: Set[str], cb_map: Dict[str, ft.Checkbox], on_change: Callable) -> ft.Row:
@@ -1300,11 +1301,11 @@ class SettingsCard(ft.Container):
         self.update()
 
     def on_wifi_mode_change(self, e):
-        self.update_broadcast_controls()
         self.update()
 
     def update_broadcast_controls(self):
-        mode = self.wifi_mode.value
+        # 使用实际生效的广播模式
+        mode = self.actual_wifi_mode 
         self.broadcast_controls.controls.clear()
         if mode == "merged":
             self.broadcast_controls.controls.append(
@@ -1578,9 +1579,11 @@ class SettingsCard(ft.Container):
         # ApBroadcastDisabled: 0 代表广播(开启), 1 代表隐藏(关闭)
         if wifi_lbd == "1":
             self.wifi_mode.value = "merged"
+            self.actual_wifi_mode = "merged"  # 记录真实状态
             self.cb_broadcast_merged.value = (b_24 == "0") 
         else:
             self.wifi_mode.value = "separated"
+            self.actual_wifi_mode = "separated"  # 记录真实状态
             self.cb_broadcast_24g.value = (b_24 == "0")
             self.cb_broadcast_5g.value = (b_5g == "0")
             
@@ -1860,7 +1863,8 @@ class SettingsCard(ft.Container):
 
     # 应用广播网络名称
     async def _execute_apply_wifi_broadcast(self):
-        mode = self.wifi_mode.value
+        # 发送时依据当前实际生效的广播模式
+        mode = self.actual_wifi_mode 
         if not mode: return
         show_toast(self.app_page, "正在应用广播设置...", True)
         self.update()

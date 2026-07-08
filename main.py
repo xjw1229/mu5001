@@ -39,42 +39,38 @@ logger.addHandler(console_handler)
 class ThemeColors:
     # 页面底色
     DARK_PAGE_BG = "#171920"          # 深色页面主背景
-    LIGHT_PAGE_BG = "#F0FFF2"         # 浅色页面主背景
+    LIGHT_PAGE_BG = "#F6F8FB"         # 浅色页面主背景
 
     # 深色主题
     DARK_SCHEME = {
         "surface": "#40425C",                   # 卡片容器背景
-        "surface_container_highest": "#36394F", # 输入框/下拉框背景
-        "on_surface": "#FFFFFF",                # 主要文字
-        "on_surface_variant": "#C0C5D8",        # 次要文字/提示文字
-        "inverse_primary": "#FFF9F2",           # 开关说明文字
-        "primary": "#82A5E0",                   # 开关按钮/上方提示字色
-        "error": "#E08282",                     # 错误、警告色
-        "outline_variant": "#2A2C3E",           # 分割线
-        "primary_container": "#5968A3",         # 顶部按钮背景
-        "on_primary_container": "#FFFFFF",      # 顶部按钮文字颜色
+        "surface_container_highest": "#36394F", # 输入框、下拉框、设备列表背景
+        "on_surface": "#FFFFFF",                # 主要文本颜色
+        "on_surface_variant": "#C0C5D8",        # 次要文本、提示文本颜色
+        "inverse_primary": "#FFF9F2",           # 开关旁辅助说明文字
+        "primary": "#82A5E0",                   # 激活色（勾选框、开关，功能切换）
+        "error": "#E08282",                     # 错误状态文本颜色
+        "outline_variant": "#2A2C3E",           # 页面分割线颜色
         "secondary_container": "#535773",       # 普通按钮默认背景
-        "secondary": "#6A6F91",                 # 普通按钮悬浮背景
+        "secondary": "#6A6F91",                 # 普通按钮悬停背景
         "tertiary_container": "#2D4A3E",        # 成功提示背景
         "error_container": "#5C2D2D"            # 失败提示背景
     }
 
     # 浅色主题
     LIGHT_SCHEME = {
-        "surface": "#E1FFE6",                   # 卡片容器背景
-        "surface_container_highest": "#C3FFCD", # 输入框/下拉框背景
-        "on_surface": "#000000",                # 主要文字
-        "on_surface_variant": "#4A4A4A",        # 次要文字/提示文字
-        "inverse_primary": "#1A1A1A",           # 开关说明文字
-        "primary": "#D76F88",                   # 开关按钮/上方提示字色
-        "error": "#D9534F",                     # 错误、警告色
-        "outline_variant": "#D5E2D9",           # 分割线
-        "primary_container": "#A5F8B3",         # 顶部按钮背景
-        "on_primary_container": "#000000",      # 顶部按钮文字颜色
-        "secondary_container": "#B4FFC1",       # 普通按钮默认背景
-        "secondary": "#72E686",                 # 普通按钮悬浮背景
-        "tertiary_container": "#79C28D",        # 成功提示背景
-        "error_container": "#F2AC9E"            # 失败提示背景
+        "surface": "#FFFFFF",                   # 卡片容器背景
+        "surface_container_highest": "#EEF3F8", # 输入框、下拉框、设备列表背景
+        "on_surface": "#000000",                # 主要文本颜色
+        "on_surface_variant": "#5F6B7A",        # 次要文本、提示文本颜色
+        "inverse_primary": "#1A1A1A",           # 开关旁辅助说明文字
+        "primary": "#D76F88",                   # 激活色（勾选框、开关，功能切换）
+        "error": "#D64545",                     # 错误状态文本颜色
+        "outline_variant": "#DDE4EC",           # 页面分割线颜色
+        "secondary_container": "#D7E2EE",       # 普通按钮默认背景
+        "secondary": "#B5C6D8",                 # 普通按钮悬停背景
+        "tertiary_container": "#DDF3E9",        # 成功提示背景
+        "error_container": "#FFE0DD"            # 失败提示背景
     }
 
 # 超时与间隔配置（单位：秒）
@@ -673,29 +669,46 @@ class MU5001Client:
 # UI 工具函数
 # ==========================================
 
-# 创建统一样式的主题按钮
-def create_button(
-    text: str,
-    on_click: Callable,
-    height: Optional[int] = None,
-    expand: bool = False
-) -> ft.Control:
-    btn_style = ft.ButtonStyle(
-        color=ft.Colors.ON_SURFACE,
-        bgcolor={
-            "hovered": ft.Colors.SECONDARY,
-            "": ft.Colors.SECONDARY_CONTAINER
-        },
-        elevation={"": 0},
-        text_style=ft.TextStyle(size=14, weight=ft.FontWeight.W_600)
+def create_text_field(label: str, value: str = "", **kwargs) -> ft.TextField:
+    sec_style = ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT)
+    return ft.TextField(
+        label=label, value=value,
+        color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+        border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY,
+        label_style=sec_style, hint_style=sec_style,
+        **kwargs
     )
+
+def create_checkbox(label: str, value: bool = False, on_change=None, **kwargs) -> ft.Checkbox:
+    return ft.Checkbox(
+        label=label, value=value, on_change=on_change,
+        label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE),
+        fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE,
+        **kwargs
+    )
+
+def create_dropdown(label: str, options: list, value: str, **kwargs) -> ft.Dropdown:
+    sec_style = ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT)
+    return ft.Dropdown(
+        label=label, options=options, value=value,
+        color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+        border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY,
+        label_style=sec_style, text_size=15, content_padding=ft.Padding(12, 10, 12, 10),
+        **kwargs
+    )
+
+# 创建统一样式的主题按钮
+def create_button(text: str, on_click: Callable, height: int = 48, expand: bool = False) -> ft.Control:
     BtnClass = getattr(ft, "Button", ft.ElevatedButton)
-    btn = BtnClass(text, on_click=on_click, height=height or 48, style=btn_style)
-    btn.data = {"base_height": height or 48}
-    if expand:
-        btn.width = float("inf")
-    else:
-        btn.expand = False
+    btn = BtnClass(
+        text, on_click=on_click, height=height,
+        style=ft.ButtonStyle(
+            color=ft.Colors.ON_SURFACE,
+            bgcolor={"hovered": ft.Colors.SECONDARY, "": ft.Colors.SECONDARY_CONTAINER},
+            elevation=0, text_style=ft.TextStyle(weight=ft.FontWeight.W_600)
+        )
+    )
+    if expand: btn.expand = True
     return btn
 
 # 在页面底部弹出浮动提示条
@@ -715,6 +728,12 @@ def show_toast(page: ft.Page, msg: str, success: bool = True) -> None:
     page.overlay.append(snack)
     snack.open = True
     page.update()
+
+def clamp_text_sizes(root, max_text_size: int, max_label_size: Optional[int] = None) -> None:
+    pass  # 已被全局 Theme 替代，无需再消耗 CPU 遍历 UI 树
+
+def restore_text_sizes(root) -> None:
+    pass  # 已被全局 Theme 替代
 
 # ==========================================
 # eCellID 工具函数
@@ -746,6 +765,7 @@ def parse_hex_safe(raw):
             return str(int(raw))
         except ValueError:
             return raw
+
 # ==========================================
 # UI 组件拆分 - 登录视图
 # ==========================================
@@ -760,26 +780,9 @@ class LoginView(ft.Container):
         
         default_pad = ft.Padding(left=12, top=12, right=12, bottom=12)
         
-        self.ip_input = ft.TextField(
-            label="管理地址", value=DEFAULT_IP, text_size=15,
-            content_padding=default_pad,
-            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY,
-            label_style=self.sec_style, hint_style=self.sec_style
-        )
-        self.pwd_input = ft.TextField(
-            label="管理员密码", password=True, can_reveal_password=True, value="", text_size=15,
-            content_padding=default_pad, multiline=True, max_lines=3,
-            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY,
-            label_style=self.sec_style, hint_style=self.sec_style
-        )
-        self.remember_cb = ft.Checkbox(
-            label="记住密码", value=False,
-            label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT),
-            fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE},
-            check_color=ft.Colors.SURFACE
-        )
+        self.ip_input = create_text_field(label="管理地址", value=DEFAULT_IP)
+        self.pwd_input = create_text_field(label="管理员密码", password=True, can_reveal_password=True, multiline=True, max_lines=3)
+        self.remember_cb = create_checkbox(label="记住密码", value=False)
         self.login_status = ft.Text("输入账号密码登录", color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER)
         self.login_btn = create_button("登录", on_click=self.do_login, height=45)
         
@@ -802,7 +805,7 @@ class LoginView(ft.Container):
         self.padding = ft.Padding(left=5, top=15, right=5, bottom=15) if is_small else 15
         self.sec_style.size = 11 if is_small else 14
         
-        # 小屏标题字号直接降到 18
+        # 小屏标题字号
         self.title_text.size = 18 if is_small else 32
         
         t_size = 12 if is_small else 15
@@ -928,30 +931,14 @@ class StatusCard(ft.Container):
         self.is_small = False
         self._last_data_hash = {}
 
-        self.txt_provider = ft.Text("运营商: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_battery = ft.Text("电量: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_network = ft.Text("网络: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_conn_time = ft.Text("连接时长: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_wan_ip = ft.Text("WAN IP: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_imei = ft.Text("IMEI: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_imsi = ft.Text("IMSI: --", size=14, color=ft.Colors.ON_SURFACE)
-        
-        self.txt_tx_speed = ft.Text("上传速度: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_rx_speed = ft.Text("下载速度: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_traffic_rt = ft.Text("本次流量: --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_traffic_mo = ft.Text("当月流量: --", size=14, color=ft.Colors.ON_SURFACE)
-        
-        self.txt_freq = ft.Text("ARFCN (小区频点): --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_pci = ft.Text("PCI (物理小区标识): --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_ecellid = ft.Text("eCellID (小区编号): --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_rsrp = ft.Text("RSRP (信号强度): --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_rsrq = ft.Text("RSRQ (信号质量): --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_sinr = ft.Text("SINR (信噪比): --", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_rssi = ft.Text("RSSI (接收总功率): --", size=14, color=ft.Colors.ON_SURFACE)
-        
-        self.txt_temp_bat = ft.Text("电池温度: --℃", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_temp_mdm = ft.Text("4G Modem: --℃", size=14, color=ft.Colors.ON_SURFACE)
-        self.txt_temp_pa = ft.Text("PA: --℃", size=14, color=ft.Colors.ON_SURFACE)
+        def c_txt(val): return ft.Text(val, color=ft.Colors.ON_SURFACE)
+        self.txt_provider, self.txt_battery, self.txt_network, self.txt_conn_time = c_txt("运营商: --"), c_txt("电量: --"), c_txt("网络: --"), c_txt("连接时长: --")
+        self.txt_wan_ip, self.txt_imei, self.txt_imsi = c_txt("WAN IP: --"), c_txt("IMEI: --"), c_txt("IMSI: --")
+        self.txt_tx_speed, self.txt_rx_speed = c_txt("上传速度: --"), c_txt("下载速度: --")
+        self.txt_traffic_rt, self.txt_traffic_mo = c_txt("本次流量: --"), c_txt("当月流量: --")
+        self.txt_freq, self.txt_pci, self.txt_ecellid = c_txt("ARFCN (小区频点): --"), c_txt("PCI (物理小区标识): --"), c_txt("eCellID (小区编号): --")
+        self.txt_rsrp, self.txt_rsrq, self.txt_sinr, self.txt_rssi = c_txt("RSRP (信号强度): --"), c_txt("RSRQ (信号质量): --"), c_txt("SINR (信噪比): --"), c_txt("RSSI (接收总功率): --")
+        self.txt_temp_bat, self.txt_temp_mdm, self.txt_temp_pa = c_txt("电池温度: --℃"), c_txt("4G Modem: --℃"), c_txt("PA: --℃")
         self.status_text = ft.Text("", color=ft.Colors.ON_SURFACE)
         
         block1 = ft.ResponsiveRow([
@@ -979,6 +966,32 @@ class StatusCard(ft.Container):
             ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
             self.status_text
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        restore_text_sizes(self)
+        self.is_small = is_small
+        size = 11 if is_ultra_small else (13 if is_small else 14)
+        spacing = 2 if is_ultra_small else (4 if is_small else 6)
+        for txt in [
+            self.txt_provider, self.txt_battery, self.txt_network, self.txt_conn_time,
+            self.txt_wan_ip, self.txt_imei, self.txt_imsi, self.txt_tx_speed,
+            self.txt_rx_speed, self.txt_traffic_rt, self.txt_traffic_mo,
+            self.txt_freq, self.txt_pci, self.txt_ecellid, self.txt_rsrp,
+            self.txt_rsrq, self.txt_sinr, self.txt_rssi, self.txt_temp_bat,
+            self.txt_temp_mdm, self.txt_temp_pa, self.status_text
+        ]:
+            txt.size = size
+        for ctrl in self.content.controls:
+            if isinstance(ctrl, ft.ResponsiveRow):
+                for item in ctrl.controls:
+                    col = getattr(item, "content", None)
+                    if isinstance(col, ft.Column):
+                        col.spacing = spacing
+        self.padding = 8 if is_ultra_small else (12 if is_small else 15)
+        self.border_radius = 8 if is_ultra_small else (10 if is_small else 12)
+        self.content.spacing = 6 if is_ultra_small else (8 if is_small else 10)
+        if is_ultra_small:
+            clamp_text_sizes(self, 11, 10)
 
     def set_global_status(self, text: str, color: str):
         if self.status_text.value != text or self.status_text.color != color:
@@ -1121,29 +1134,12 @@ class RebootCard(ft.Container):
         )
 
         self.reboot_hint = ft.Text("提示：时:0~23 | 分:0~59 | 缓冲时间:1~6", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
-        self.reboot_mode = ft.Dropdown(
-            label="重启模式",
-            options=[ft.dropdown.Option("1", "1 - 按周自动重启"), ft.dropdown.Option("2", "2 - 按间隔天数")], 
-            value="1",width=220, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-            label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
-        )
+        self.reboot_mode = create_dropdown("重启模式", [ft.dropdown.Option("1", "1 - 按周自动重启"), ft.dropdown.Option("2", "2 - 按间隔天数")], "1", width=220)
         
         # 不再使用 expand，依赖 ResponsiveRow 的栅格系统来控制宽度
-        self.rb_time_hr = ft.TextField(
-            label="时", value="02", input_filter=ft.NumbersOnlyInputFilter(),
-            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style,
-            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
-        )
-        self.rb_time_min = ft.TextField(
-            label="分", value="00", input_filter=ft.NumbersOnlyInputFilter(),
-            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style,
-            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
-        )
-        self.rb_buffer = ft.TextField(
-            label="缓冲时间", value="02", input_filter=ft.NumbersOnlyInputFilter(),
-            color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style,
-            border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
-        )
+        self.rb_time_hr = create_text_field(label="时", value="02", input_filter=ft.NumbersOnlyInputFilter())
+        self.rb_time_min = create_text_field(label="分", value="00", input_filter=ft.NumbersOnlyInputFilter())
+        self.rb_buffer = create_text_field(label="缓冲时间", value="02", input_filter=ft.NumbersOnlyInputFilter())
         
         # 采用 ResponsiveRow，小屏(sm)占据12格(独占一行)，中屏(md)占据4格(三分之一宽)
         self.time_container = ft.ResponsiveRow(
@@ -1157,29 +1153,22 @@ class RebootCard(ft.Container):
         )
 
         self.week_cbs = [
-            ft.Checkbox(
-                label=w, value=False, data=str(i+1), on_change=self.on_week_change,
-                label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE),
-                fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE},
-                check_color=ft.Colors.SURFACE
-            ) for i, w in enumerate(["周一", "周二", "周三", "周四", "周五", "周六", "周日"])
+            create_checkbox(label=w, value=False, data=str(i+1), on_change=self.on_week_change)
+            for i, w in enumerate(["周一", "周二", "周三", "周四", "周五", "周六", "周日"])
         ]
-        self.rb_interval = ft.Dropdown(
-            label="间隔天数",
-            options=[ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)],
-            value="1", menu_height=300, width=None, text_size=15, content_padding=ft.Padding(left=12, top=10, right=12, bottom=10), color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-            label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
-        )
+        self.rb_interval = create_dropdown("间隔天数", [ft.dropdown.Option(str(i), str(i)) for i in range(1, 31)], "1", menu_height=300)
         self.btn_save_reboot = create_button("保存重启规则", on_click=self.on_save_reboot)
-        self.btn_save_reboot.data["small_height"] = 88
-        self.btn_save_reboot.data["small_text_size"] = 12
-        self.btn_save_reboot.data["base_text"] = "保存重启规则"
-        self.btn_save_reboot.data["small_text"] = "保存\n重启\n规则"
         
-        row_weeks = ft.Row(controls=[ft.Container(content=cb, width=75, padding=0, margin=0) for cb in self.week_cbs], wrap=True, spacing=10, run_spacing=5)
+        self.week_items = [ft.Container(content=cb, width=86, padding=0, margin=0) for cb in self.week_cbs]
+        row_weeks = ft.Row(controls=self.week_items, wrap=True, spacing=4, run_spacing=4)
+
+        self.txt_reboot_title = ft.Text("定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
+        # 抽离选项为变量
+        self.txt_opt1 = ft.Text("选项1: 按周触发（仅选 1 生效）", size=13, color=ft.Colors.ON_SURFACE_VARIANT, weight=ft.FontWeight.BOLD)
+        self.txt_opt2 = ft.Text("选项2: 间隔触发（仅选 2 生效）", size=13, color=ft.Colors.ON_SURFACE_VARIANT, weight=ft.FontWeight.BOLD)
 
         self.content = ft.Column([
-            ft.Text("定时重启规则", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+            self.txt_reboot_title,
             self.txt_local_time, ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
             ft.Row([self.reboot_enable, ft.Text("定时重启", color=ft.Colors.INVERSE_PRIMARY)], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True), 
             self.reboot_hint,
@@ -1188,20 +1177,28 @@ class RebootCard(ft.Container):
             
             self.reboot_mode,
             ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
-            ft.Text("选项1: 按周触发（仅选 1 生效）", size=13, color=ft.Colors.ON_SURFACE_VARIANT, weight=ft.FontWeight.BOLD),
+            self.txt_opt1,  # 使用变量
             row_weeks, ft.Container(height=5),
-            ft.Text("选项2: 间隔触发（仅选 2 生效）", size=13, color=ft.Colors.ON_SURFACE_VARIANT, weight=ft.FontWeight.BOLD),
+            self.txt_opt2,  # 使用变量
             self.rb_interval, ft.Container(height=10), self.btn_save_reboot
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
-    def update_size(self, is_small: bool):
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        restore_text_sizes(self)
         self.is_small_layout = is_small
-        text_size = 12 if is_small else 15
-        label_size = 11 if is_small else 14
-        pad = ft.Padding(left=6, top=8, right=6, bottom=8) if is_small else ft.Padding(left=12, top=10, right=12, bottom=10)
+        if hasattr(self, 'txt_reboot_title'): self.txt_reboot_title.size = 13 if is_ultra_small else (16 if is_small else 18)
+        
+        # 统一提示文本字号
+        hint_size = 10 if is_ultra_small else (11 if is_small else 12)
+        if hasattr(self, 'txt_local_time'): self.txt_local_time.size = hint_size
+        if hasattr(self, 'reboot_hint'): self.reboot_hint.size = hint_size
+        
+        text_size = 11 if is_ultra_small else (13 if is_small else 15)
+        label_size = 10 if is_ultra_small else (12 if is_small else 14)
+        pad = ft.Padding(left=6, top=6, right=6, bottom=6) if is_ultra_small else (ft.Padding(left=10, top=8, right=10, bottom=8) if is_small else ft.Padding(left=12, top=10, right=12, bottom=10))
         for control in [self.reboot_mode, self.rb_time_hr, self.rb_time_min, self.rb_buffer, self.rb_interval]:
             if hasattr(control, "text_size"):
-                control.text_size = 15 if is_small and control in [self.reboot_mode, self.rb_interval] else text_size
+                control.text_size = text_size
             if hasattr(control, "content_padding"):
                 if not (is_small and isinstance(getattr(control, "data", None), dict) and "small_options" in control.data):
                     control.content_padding = pad
@@ -1210,15 +1207,24 @@ class RebootCard(ft.Container):
         for cb in self.week_cbs:
             if cb.label_style:
                 cb.label_style.size = label_size
-        self.btn_save_reboot.height = self.btn_save_reboot.data.get("small_height", 88) if is_small else self.btn_save_reboot.data.get("base_height", 48)
-        if hasattr(self.btn_save_reboot, "text"):
-            current_text = getattr(self.btn_save_reboot, "text", "")
-            self.btn_save_reboot.text = self.btn_save_reboot.data.get("small_text" if is_small else "base_text", current_text)
-        elif hasattr(self.btn_save_reboot, "content"):
-            current_text = getattr(self.btn_save_reboot, "content", "")
-            self.btn_save_reboot.content = self.btn_save_reboot.data.get("small_text" if is_small else "base_text", current_text)
-        if self.btn_save_reboot.style and getattr(self.btn_save_reboot.style, "text_style", None):
-            self.btn_save_reboot.style.text_style.size = self.btn_save_reboot.data.get("small_text_size", 12) if is_small else 14
+        for item in getattr(self, "week_items", []):
+            item.width = 74 if is_ultra_small else (86 if is_small else 75)
+            
+        # 处理选项文本和按钮排版
+        if hasattr(self, 'txt_opt1'): self.txt_opt1.size = 11 if is_ultra_small else 13
+        if hasattr(self, 'txt_opt2'): self.txt_opt2.size = 11 if is_ultra_small else 13
+        
+        self.btn_save_reboot.height = 42 if is_ultra_small else 48
+        if self.btn_save_reboot.style:
+            # 单独把这个按钮的文字设小，并极大压缩左右内边距(Padding)，防止文字换行
+            self.btn_save_reboot.style.text_style.size = 11 if is_ultra_small else (13 if is_small else 14)
+            self.btn_save_reboot.style.padding = ft.Padding.symmetric(horizontal=4) if is_ultra_small else None
+
+        if is_ultra_small:
+            self.padding = 8
+            self.border_radius = 8
+            self.content.spacing = 8
+            clamp_text_sizes(self, 12, 10)
         try:
             self.update()
         except Exception:
@@ -1326,15 +1332,12 @@ class SettingsCard(ft.Container):
     def _create_checkbox_grid(self, bands: List[str], prefix: str, selected: Set[str], cb_map: Dict[str, ft.Checkbox], on_change: Callable) -> ft.Row:
         controls = []
         for b in bands:
-            cb = ft.Checkbox(
-                label=f"{prefix}{b}", value=b in selected, data=b, on_change=on_change,
-                label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE),
-                fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE},
-                check_color=ft.Colors.SURFACE
-            )
+            cb = create_checkbox(label=f"{prefix}{b}", value=b in selected, data=b, on_change=on_change)
             cb_map[b] = cb
-            controls.append(ft.Container(content=cb, width=72, padding=0, margin=0))
-        return ft.Row(controls, wrap=True, spacing=5, run_spacing=0)
+            controls.append(ft.Container(content=cb, width=76, padding=0, margin=0))
+        row = ft.Row(controls, wrap=True, spacing=6, run_spacing=4)
+        row.data = {"item_width_ultra": 58, "item_width_small": 74, "item_width_base": 76}
+        return row
 
     def on_lte_change(self, e):
         b = e.control.data
@@ -1380,25 +1383,35 @@ class SettingsCard(ft.Container):
             self.wifi_detail_5g_section.visible = (mode == "separated")
         if hasattr(self, "wifi_sync_to_5g"):
             self.wifi_sync_to_5g.visible = (mode == "separated")
+        if hasattr(self, "wifi_sync_to_5g_row"):
+            self.wifi_sync_to_5g_row.visible = (mode == "separated")
             self.update_wifi_sync_state()
         if hasattr(self, "wifi_detail_24g_title"):
-            self.wifi_detail_24g_title.value = "WiFi" if mode == "merged" else "2.4GHz"
+            self.wifi_detail_24g_title.value = "2.4/5GHz" if mode == "merged" else "2.4GHz"
 
     def build_ui(self):
         # WiFi 休眠
-        self.wifi_sleep = ft.Dropdown(
-            label="",
-            options=[ft.dropdown.Option(str(k), v) for k, v in [("0", "永不休眠"), ("5", "5 分钟"), ("10", "10 分钟"), ("20", "20 分钟"), ("30", "30 分钟"), ("60", "1 小时"), ("120", "2 小时")]],
-            value="10", width=None, text_size=15, content_padding=ft.Padding(left=12, top=10, right=12, bottom=10), color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-            label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY
-        )
-        self.wifi_sleep.data = {"base_options": [("0", "永不休眠"), ("5", "5 分钟"), ("10", "10 分钟"), ("20", "20 分钟"), ("30", "30 分钟"), ("60", "1 小时"), ("120", "2 小时")], "small_options": [("0", "永不休眠"), ("5", "5 分钟"), ("10", "10 分钟"), ("20", "20 分钟"), ("30", "30 分钟"), ("60", "1 小时"), ("120", "2 小时")]}
+        sleep_opts = [("0", "永不休眠"), ("5", "5 分钟"), ("10", "10 分钟"), ("20", "20 分钟"), ("30", "30 分钟"), ("60", "1 小时"), ("120", "2 小时")]
+        self.wifi_sleep = create_dropdown("", [ft.dropdown.Option(k, v) for k, v in sleep_opts], "10")
         btn_wifi_sleep = create_button("保存休眠", on_click=self.on_wifi_sleep_save)
 
         # WiFi 设置 UI (合一/分离单选 + 动态广播复选框)
         # 提取公共的文字样式，跟随主题的 ON_SURFACE 颜色变化
         lbl_style = ft.TextStyle(color=ft.Colors.ON_SURFACE)
         self.compact_labels = [self.sec_style, lbl_style]
+        self.wifi_checkbox_label_texts: List[ft.Text] = []
+
+        def make_checkbox_line(cb: ft.Checkbox, label: str) -> ft.Row:
+            cb.label = ""
+            txt = ft.Text(label, color=ft.Colors.ON_SURFACE)
+            txt.data = {"base_label": label, "small_label": label}
+            self.wifi_checkbox_label_texts.append(txt)
+            return ft.Row(
+                [cb, txt],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=False
+            )
 
         # 横向自动折行排列
         self.wifi_mode = ft.RadioGroup(
@@ -1411,18 +1424,9 @@ class SettingsCard(ft.Container):
         )
         
         # 三个复选框
-        self.cb_broadcast_merged = ft.Checkbox(
-            label="WiFi 广播", value=True, label_style=lbl_style,
-            fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
-        )
-        self.cb_broadcast_24g = ft.Checkbox(
-            label="2.4GHz", value=True, label_style=lbl_style,
-            fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
-        )
-        self.cb_broadcast_5g = ft.Checkbox(
-            label="5GHz", value=True, label_style=lbl_style,
-            fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
-        )
+        self.cb_broadcast_merged = create_checkbox(label="WiFi 广播", value=True)
+        self.cb_broadcast_24g = create_checkbox(label="2.4GHz", value=True)
+        self.cb_broadcast_5g = create_checkbox(label="5GHz", value=True)
         
         # 赋默认容器内容，避免首次加载数据前出现 UI 空白和页面跳动
         btn_apply_mode = create_button("保存双频", on_click=self.on_apply_wifi_mode)
@@ -1436,32 +1440,38 @@ class SettingsCard(ft.Container):
         # 设为隐藏的占位符，防止页面下方的排版代码报错
         def create_detail_controls(prefix: str, title: str):
             title_text = ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
-            ssid = ft.TextField(label="", text_size=15, content_padding=ft.Padding(left=12, top=10, right=12, bottom=10), multiline=True, max_lines=3, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY)
-            broadcast = ft.Checkbox(label="广播SSID", value=True, label_style=lbl_style, fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE)
-            isolate = ft.Checkbox(label="客户端隔离", value=False, label_style=lbl_style, fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE)
-            auth = ft.Dropdown(label="安全模式", value="WPA2PSK", options=[ft.dropdown.Option("OPEN", "OPEN"), ft.dropdown.Option("WPA2PSK", "WPA2-PSK"), ft.dropdown.Option("WPAPSKWPA2PSK", "WPA/WPA2-PSK"), ft.dropdown.Option("WPA3PSK", "WPA3-PSK"), ft.dropdown.Option("WPA2PSKWPA3PSK", "WPA2/WPA3-PSK")], text_size=15, content_padding=ft.Padding(left=12, top=10, right=12, bottom=10), color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY)
-            auth.data = {"base_options": [("OPEN", "OPEN"), ("WPA2PSK", "WPA2-PSK"), ("WPAPSKWPA2PSK", "WPA/WPA2-PSK"), ("WPA3PSK", "WPA3-PSK"), ("WPA2PSKWPA3PSK", "WPA2/WPA3-PSK")], "small_options": [("OPEN", "OPEN"), ("WPA2PSK", "WPA2"), ("WPAPSKWPA2PSK", "WPA/W2"), ("WPA3PSK", "WPA3"), ("WPA2PSKWPA3PSK", "W2/W3")]} 
-            password = ft.TextField(label="密码", password=True, can_reveal_password=True, text_size=15, content_padding=ft.Padding(left=12, top=10, right=12, bottom=10), multiline=True, max_lines=3, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY)
-            broadcast.data = {"base_label": "广播SSID", "small_label": "广播\nSSID"}
-            isolate.data = {"base_label": "客户端隔离", "small_label": "客户端\n隔离"}
+            ssid = create_text_field(label="", multiline=True, max_lines=3)
+            broadcast = create_checkbox(label="", value=True)
+            isolate = create_checkbox(label="", value=False)
+            auth_opts = [("OPEN", "OPEN"), ("WPA2PSK", "WPA2-PSK"), ("WPAPSKWPA2PSK", "WPA/WPA2-PSK"), ("WPA3PSK", "WPA3-PSK"), ("WPA2PSKWPA3PSK", "WPA2/WPA3-PSK")]
+            auth = create_dropdown("安全模式", [ft.dropdown.Option(k, v) for k, v in auth_opts], "WPA2PSK")
+            auth.data = {"base_options": auth_opts, "small_options": [("OPEN", "OPEN"), ("WPA2PSK", "WPA2"), ("WPAPSKWPA2PSK", "WPA/W2"), ("WPA3PSK", "WPA3"), ("WPA2PSKWPA3PSK", "W2/W3")]}
+            password = create_text_field(label="密码", password=True, can_reveal_password=True, multiline=True, max_lines=3)
+            broadcast.data = {"base_label": "广播SSID", "small_label": "广播SSID"}
+            isolate.data = {"base_label": "客户端隔离", "small_label": "客户端隔离"}
             controls = {"title": title_text, "ssid": ssid, "broadcast": broadcast, "isolate": isolate, "auth": auth, "password": password}
             setattr(self, f"wifi_detail_{prefix}", controls)
-            return ft.Column([title_text, ssid, broadcast, isolate, auth, password], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+            return ft.Column([
+                title_text,
+                ssid,
+                make_checkbox_line(broadcast, "广播SSID"),
+                make_checkbox_line(isolate, "客户端隔离"),
+                auth,
+                password
+            ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
         wifi_detail_24g_section = create_detail_controls("24g", "2.4GHz")
         self.wifi_detail_24g_title = self.wifi_detail_24g["title"]
         self.wifi_detail_5g_section = create_detail_controls("5g", "5GHz")
-        btn_apply_wifi_detail = create_button("应用 WiFi 设置", on_click=self.on_apply_wifi_detail, expand=True)
-        self.wifi_sync_to_5g = ft.Checkbox(label="同步基本参数设置到5GHz", value=False, on_change=lambda e: self.update_wifi_sync_state(), label_style=lbl_style, fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE)
-        self.wifi_sync_to_5g.data = {"base_label": "同步到5GHz", "small_label": "同步到\n5GHz"}
-        btn_apply_wifi_detail.data["small_height"] = 78
-        btn_apply_wifi_detail.data["small_text_size"] = 12
-        btn_apply_wifi_detail.data["base_text"] = "应用 WiFi 设置"
-        btn_apply_wifi_detail.data["small_text"] = "应用\nWiFi设置"
+        self.wifi_detail_5g_section.visible = False
+        btn_apply_wifi_detail = create_button("应用WiFi设置", on_click=self.on_apply_wifi_detail, expand=True)
+        self.wifi_sync_to_5g = create_checkbox(label="", value=False, on_change=lambda e: self.update_wifi_sync_state())
+        self.wifi_sync_to_5g_row = make_checkbox_line(self.wifi_sync_to_5g, "同步到5GHz")
+        self.wifi_sync_to_5g_row.visible = False
         wifi_detail_container = ft.Column([
             ft.Text("WiFi 详细设置", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
             wifi_detail_24g_section,
-            self.wifi_sync_to_5g,
+            self.wifi_sync_to_5g_row,
             self.wifi_detail_5g_section,
             btn_apply_wifi_detail
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
@@ -1485,20 +1495,12 @@ class SettingsCard(ft.Container):
         coverage_options = {"short_mode": "近距离", "medium_mode": "中距离", "long_mode": "远距离"}
         cov_controls = []
         for val, label in coverage_options.items():
-            cb = ft.Checkbox(
-                label=label, value=(val == "short_mode"), on_change=on_coverage_change,
-                label_style=lbl_style, fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
-            )
-            cb.data = {"base_label": label, "small_label": label}
+            cb = create_checkbox(label="", value=(val == "short_mode"), on_change=on_coverage_change)
             self.wifi_coverage_cbs[val] = cb
-            cov_controls.append(ft.Container(content=cb, col={"xs": 12, "sm": 6, "md": 3}, padding=0, margin=0))
+            cov_controls.append(ft.Container(content=make_checkbox_line(cb, label), col={"xs": 12, "sm": 6, "md": 3}, padding=0, margin=0))
             
         self.wifi_coverage_row = ft.ResponsiveRow(controls=cov_controls, spacing=10, run_spacing=5)
         btn_wifi_coverage_apply = create_button("应用覆盖范围", on_click=self.on_apply_wifi_coverage, expand=True)
-        btn_wifi_coverage_apply.data["small_height"] = 78
-        btn_wifi_coverage_apply.data["small_text_size"] = 12
-        btn_wifi_coverage_apply.data["base_text"] = "应用覆盖范围"
-        btn_wifi_coverage_apply.data["small_text"] = "应用\n覆盖范围"
         
         # 数据连接开关
         self.data_switch = ft.Switch(
@@ -1512,10 +1514,7 @@ class SettingsCard(ft.Container):
         # 网络模式
         net_mode_controls = []
         for name in NET_CONFIG.keys():
-            cb = ft.Checkbox(
-                label=name, value=(name == "5G/4G/3G"), on_change=self.on_net_mode_change,
-                label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE), fill_color={"selected": ft.Colors.PRIMARY, "": ft.Colors.SURFACE}, check_color=ft.Colors.SURFACE
-            )
+            cb = create_checkbox(label=name, value=(name == "5G/4G/3G"), on_change=self.on_net_mode_change)
             self.net_mode_cbs[name] = cb
             item = ft.Container(content=cb, width=120, padding=0, margin=0)
             self.net_mode_items.append(item)
@@ -1527,23 +1526,24 @@ class SettingsCard(ft.Container):
         lte_grid = self._create_checkbox_grid(LTE_BANDS, "B", self.lte_selected, self.lte_cbs, self.on_lte_change)
         sa_grid = self._create_checkbox_grid(NR_SA_BANDS, "N", self.nr_sa_selected, self.sa_cbs, self.on_sa_change)
         nsa_grid = self._create_checkbox_grid(NR_NSA_BANDS, "N", self.nr_nsa_selected, self.nsa_cbs, self.on_nsa_change)
-        btn_lte_apply = create_button("应用 4G", on_click=self.on_apply_lte, expand=True)
-        btn_sa_apply = create_button("应用 SA", on_click=self.on_apply_sa, expand=True)
-        btn_nsa_apply = create_button("应用 NSA", on_click=self.on_apply_nsa, expand=True)
+        self.band_grids = [lte_grid, sa_grid, nsa_grid]
+        btn_lte_apply = create_button("应用4G", on_click=self.on_apply_lte, expand=True)
+        btn_sa_apply = create_button("应用SA", on_click=self.on_apply_sa, expand=True)
+        btn_nsa_apply = create_button("应用NSA", on_click=self.on_apply_nsa, expand=True)
         
         # 锁小区表单
         # 统一加上 expand=True，强制它们撑满容器宽度以保证右侧对齐
-        self.cell_pci = ft.TextField(expand=True, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY, input_filter=ft.NumbersOnlyInputFilter())
-        self.cell_earfcn = ft.TextField(expand=True, color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, hint_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY, input_filter=ft.NumbersOnlyInputFilter())
-        self.cell_band = ft.Dropdown(expand=True, options=[ft.dropdown.Option(b, str(b)) for b in ["1", "3", "28", "41", "78"]], value="1", color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY)
-        self.cell_scs = ft.Dropdown(expand=True, options=[ft.dropdown.Option(s, f"{s}KHz") for s in ["15", "30", "60"]], value="15", color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, label_style=self.sec_style, border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY)
+        self.cell_pci = create_text_field(label="", expand=True, input_filter=ft.NumbersOnlyInputFilter())
+        self.cell_earfcn = create_text_field(label="", expand=True, input_filter=ft.NumbersOnlyInputFilter())
+        self.cell_band = create_dropdown("", [ft.dropdown.Option(b, b) for b in ["1", "3", "28", "41", "78"]], "1", expand=True)
+        self.cell_scs = create_dropdown("", [ft.dropdown.Option(s, f"{s}KHz") for s in ["15", "30", "60"]], "15", expand=True)
         self.compact_inputs = [
             self.wifi_sleep, self.cell_pci, self.cell_earfcn, self.cell_band, self.cell_scs,
             self.wifi_detail_24g["ssid"], self.wifi_detail_24g["auth"], self.wifi_detail_24g["password"],
             self.wifi_detail_5g["ssid"], self.wifi_detail_5g["auth"], self.wifi_detail_5g["password"]
         ]
        
-        # 采用 ResponsiveRow 自动处理排版：小屏标签居上(折行)，中屏标签居左(同一行)
+        # 采用 ResponsiveRow 自动处理排版
         def create_responsive_field(label_text: str, control: ft.Control) -> ft.ResponsiveRow:
             return ft.ResponsiveRow(
                 controls=[
@@ -1574,19 +1574,22 @@ class SettingsCard(ft.Container):
             self.btn_net_mode_apply, btn_lte_apply, btn_sa_apply, btn_nsa_apply,
             btn_cell_apply, btn_cell_unlock, btn_cell_reboot
         ]
+        self.wifi_reconnect_hint = ft.Text("应用后需重新连接 WiFi", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.band_hint = ft.Text("每项至少保留一个频段", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
 
         # WiFi 设置专属卡片
+        self.txt_wifi_title = ft.Text("WiFi 设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
         wifi_section = ft.Container(
             padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12,
             content=ft.Column([
-                ft.Text("WiFi 设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                self.txt_wifi_title,
                 ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
                 ft.Text("WiFi 休眠", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
                 self.wifi_sleep, btn_wifi_sleep, ft.Container(height=15),
 
                 ft.Column([
                     ft.Text("WiFi 频段设置", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-                    ft.Text("应用后需重新连接 WiFi", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+                    self.wifi_reconnect_hint
                 ], spacing=2),
                 wifi_mode_container, btn_wifi_radio_apply, ft.Container(height=15),
                 wifi_detail_container, ft.Container(height=15),
@@ -1597,10 +1600,11 @@ class SettingsCard(ft.Container):
         )
 
         # 高级网络设置专属卡片
+        self.txt_adv_net_title = ft.Text("高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
         adv_network_section = ft.Container(
             padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12,
             content=ft.Column([
-                ft.Text("高级网络设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                self.txt_adv_net_title,
                 ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
                 
                 ft.Text("网络模式锁定", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
@@ -1609,7 +1613,7 @@ class SettingsCard(ft.Container):
                 
                 ft.Column([
                     ft.Text("网络频段锁定", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-                    ft.Text("每项至少保留一个频段", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+                    self.band_hint 
                 ], spacing=2),
                 ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
                 ft.Text("4G LTE 频段", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
@@ -1636,52 +1640,80 @@ class SettingsCard(ft.Container):
         self.content = adv_network_section
 
     # 重写 update 方法，确保被分离到工具箱的 wifi_section 也能同步刷新数据
-    def update_size(self, is_small: bool):
-        text_size = 12 if is_small else 15
-        label_size = 12 if is_small else 14
-        button_text_size = 13 if is_small else 14
-        button_height = 48
-        pad = ft.Padding(left=2, top=8, right=2, bottom=8) if is_small else ft.Padding(left=12, top=10, right=12, bottom=10)
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        restore_text_sizes(getattr(self, "content", None))
+        restore_text_sizes(getattr(self, "wifi_section", None))
+
+        if hasattr(self, 'txt_wifi_title'): self.txt_wifi_title.size = 13 if is_ultra_small else (16 if is_small else 18)
+        if hasattr(self, 'txt_adv_net_title'): self.txt_adv_net_title.size = 13 if is_ultra_small else (16 if is_small else 18)
+        text_size = 11 if is_ultra_small else (13 if is_small else 15)
+        label_size = 10 if is_ultra_small else (12 if is_small else 14)
+        button_text_size = 11 if is_ultra_small else (13 if is_small else 14)
+        button_height = 42 if is_ultra_small else 48
+        pad = ft.Padding(left=6, top=6, right=6, bottom=6) if is_ultra_small else (ft.Padding(left=10, top=8, right=10, bottom=8) if is_small else ft.Padding(left=12, top=10, right=12, bottom=10))
+
+        for section in [getattr(self, "wifi_section", None), getattr(self, "content", None)]:
+            if section:
+                section.padding = 8 if is_ultra_small else (12 if is_small else 15)
+                section.border_radius = 8 if is_ultra_small else (10 if is_small else 12)
+                if isinstance(getattr(section, "content", None), ft.Column):
+                    section.content.spacing = 8 if is_ultra_small else (10 if is_small else 12)
 
         for style in self.compact_labels:
             style.size = label_size
+        option_label_style = ft.TextStyle(color=ft.Colors.ON_SURFACE, size=label_size)
 
         for cb in list(self.net_mode_cbs.values()) + list(self.lte_cbs.values()) + list(self.sa_cbs.values()) + list(self.nsa_cbs.values()) + list(getattr(self, "wifi_coverage_cbs", {}).values()):
-            if cb.label_style:
-                cb.label_style.size = label_size
+            cb.label_style = option_label_style
             if cb in getattr(self, "wifi_coverage_cbs", {}).values() and isinstance(cb.data, dict):
-                cb.label = cb.data.get("small_label" if is_small else "base_label", cb.label)
+                cb.label = ""
 
-        net_item_width = 105 if is_small else 120
+        net_item_width = 86 if is_ultra_small else (105 if is_small else 120)
         for item in self.net_mode_items:
             item.width = net_item_width
+        for grid in getattr(self, "band_grids", []):
+            if isinstance(grid.data, dict):
+                key = "item_width_ultra" if is_ultra_small else ("item_width_small" if is_small else "item_width_base")
+                item_width = grid.data.get(key, 76)
+            else:
+                item_width = 76
+            grid.spacing = 2 if is_ultra_small else (4 if is_small else 6)
+            grid.run_spacing = 2 if is_ultra_small else 4
+            for item in grid.controls:
+                item.width = item_width
 
         for cb in [getattr(self, "cb_broadcast_merged", None), getattr(self, "cb_broadcast_24g", None), getattr(self, "cb_broadcast_5g", None)]:
-            if cb and cb.label_style:
-                cb.label_style.size = label_size
+            if cb:
+                cb.label_style = option_label_style
 
         radio_content = getattr(self.wifi_mode, "content", None)
         if radio_content:
             for item in getattr(radio_content, "controls", []):
                 radio = getattr(item, "content", None)
-                if radio and getattr(radio, "label_style", None):
-                    radio.label_style.size = label_size
+                if radio:
+                    radio.label_style = option_label_style
                     if radio.value == "merged":
-                        radio.label = "双频\n合一" if is_small else "双频合一"
+                        radio.label = "双频合一"
                     elif radio.value == "separated":
-                        radio.label = "双频\n分离" if is_small else "双频分离"
+                        radio.label = "双频分离"
 
         for controls in [self.wifi_detail_24g, self.wifi_detail_5g]:
             for key in ["broadcast", "isolate"]:
                 cb = controls[key]
-                if cb.label_style:
-                    cb.label_style.size = label_size
+                cb.label_style = option_label_style
+                cb.label = ""
                 if isinstance(cb.data, dict):
-                    cb.label = cb.data.get("small_label" if is_small else "base_label", cb.label)
-        if self.wifi_sync_to_5g.label_style:
-            self.wifi_sync_to_5g.label_style.size = label_size
+                    cb.data["current_label"] = cb.data.get("small_label" if is_small else "base_label", "")
+        self.wifi_sync_to_5g.label_style = option_label_style
+        self.wifi_sync_to_5g.label = ""
         if isinstance(self.wifi_sync_to_5g.data, dict):
-            self.wifi_sync_to_5g.label = self.wifi_sync_to_5g.data.get("small_label" if is_small else "base_label", "同步到5GHz")
+            self.wifi_sync_to_5g.data["current_label"] = self.wifi_sync_to_5g.data.get("small_label" if is_small else "base_label", "同步到5GHz")
+
+        for text in getattr(self, "wifi_checkbox_label_texts", []):
+            text.size = label_size
+            text.color = ft.Colors.ON_SURFACE
+            if isinstance(text.data, dict):
+                text.value = text.data.get("small_label" if is_small else "base_label", text.value)
 
         for control in self.compact_inputs:
             if hasattr(control, "text_size"):
@@ -1690,9 +1722,9 @@ class SettingsCard(ft.Container):
                 option_key = "small_options" if is_small else "base_options"
                 control.options = [ft.dropdown.Option(key, text) for key, text in control.data[option_key]]
                 if is_small:
-                    control.text_size = 15
-                    control.content_padding = ft.Padding(left=2, top=8, right=0, bottom=8)
-                    control.height = 56
+                    control.text_size = text_size
+                    control.content_padding = pad
+                    control.height = 44 if is_ultra_small else 56
             if control in [self.wifi_detail_24g["auth"], self.wifi_detail_5g["auth"], self.wifi_detail_24g["password"], self.wifi_detail_5g["password"]]:
                 control.width = None if is_small else 360
             if hasattr(control, "height"):
@@ -1721,8 +1753,21 @@ class SettingsCard(ft.Container):
                 else:
                     btn.style.text_style.size = button_text_size
 
+        # 统一处理底部提示文字缩放
+        hint_size = 10 if is_ultra_small else (11 if is_small else 12)
+        
+        if hasattr(self, "wifi_reconnect_hint"):
+            self.wifi_reconnect_hint.size = hint_size
+            
+        if hasattr(self, "band_hint"):
+            self.band_hint.size = hint_size
+
         for text in self.compact_texts:
-            text.size = 11 if is_small else 13
+            text.size = hint_size
+
+        if is_ultra_small:
+            clamp_text_sizes(self.content, 12, 10)
+            clamp_text_sizes(self.wifi_section, 12, 10)
 
         try:
             self.update()
@@ -1765,11 +1810,11 @@ class SettingsCard(ft.Container):
         cell_val = res.get("nr5g_cell_lock", "")
         if cell_val and cell_val != "1,1,1,1":
             parts = cell_val.split(",")
-            if len(parts) >= 4:
-                self.cell_pci.value = parts[0].strip()
-                self.cell_earfcn.value = parts[1].strip()
-                if any(o.key == parts[2].strip() for o in self.cell_band.options): self.cell_band.value = parts[2].strip()
-                if any(o.key == parts[3].strip() for o in self.cell_scs.options): self.cell_scs.value = parts[3].strip()
+            parts = (parts + ["", "", "1", "15"])[:4]  # 安全补全缺失数据，防止越界崩溃
+            self.cell_pci.value = parts[0].strip()
+            self.cell_earfcn.value = parts[1].strip()
+            if any(o.key == parts[2].strip() for o in self.cell_band.options): self.cell_band.value = parts[2].strip()
+            if any(o.key == parts[3].strip() for o in self.cell_scs.options): self.cell_scs.value = parts[3].strip()
         else:
             self.cell_pci.value = ""
             self.cell_earfcn.value = ""
@@ -2195,6 +2240,21 @@ class DeviceListCard(ft.Container):
                     )
             self._last_data_hash['device_list'] = dev_hash
             self.update()
+
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        restore_text_sizes(self)
+        self.padding = 8 if is_ultra_small else (12 if is_small else 15)
+        self.border_radius = 8 if is_ultra_small else 12
+        self.content.spacing = 8 if is_ultra_small else 10
+        self.device_list_col.spacing = 6 if is_ultra_small else 10
+        self.txt_device_label.size = 13 if is_ultra_small else (18 if not is_small else 16)
+        self.txt_device_count.size = 12 if is_ultra_small else 14
+        clamp_text_sizes(self, 12 if is_ultra_small else 14, 11 if is_ultra_small else 13)
+        try:
+            self.update()
+        except Exception:
+            pass
+
 # ==========================================
 # 主程序：应用类封装
 # ==========================================
@@ -2218,6 +2278,7 @@ class MU5001:
             font_family="Source Han Sans SC, Noto Sans SC, Microsoft YaHei, sans-serif",
             color_scheme=ft.ColorScheme(**ThemeColors.LIGHT_SCHEME)
         )
+        self.apply_responsive_text_theme(14)
         
         # 设定初始状态为深色模式，并赋予独立的页面背景色
         self.page.theme_mode = ft.ThemeMode.DARK
@@ -2231,6 +2292,27 @@ class MU5001:
         self.current_is_small = None
         self.tool_item_texts: List[ft.Text] = []
         self.prefs = None
+
+    def apply_responsive_text_theme(self, font_size: int):
+        title_size = font_size + 4  # 标题永远比正文大4号，跟随正文一起自动缩放
+        text_theme = ft.TextTheme(
+            body_medium=ft.TextStyle(size=font_size),
+            body_large=ft.TextStyle(size=font_size),
+            label_medium=ft.TextStyle(size=font_size),
+            label_large=ft.TextStyle(size=font_size),
+            title_small=ft.TextStyle(size=title_size),
+            title_medium=ft.TextStyle(size=title_size),
+        )
+        if self.page.theme:
+            self.page.theme.text_theme = text_theme
+        if self.page.dark_theme:
+            self.page.dark_theme.text_theme = text_theme
+
+    def is_control_mounted(self, control) -> bool:
+        try:
+            return bool(control and control.page)
+        except RuntimeError:
+            return False
 
     async def start(self):
         # 尝试初始化本地存储
@@ -2281,14 +2363,10 @@ class MU5001:
         await self.login_view.init_from_storage()
 
     def _create_tool_item(self, icon, text, on_click):
-        text_control = ft.Text(text, size=15, color=ft.Colors.ON_SURFACE, weight=ft.FontWeight.BOLD, max_lines=1, text_align=ft.TextAlign.CENTER)
-        self.tool_item_texts.append(text_control)
-        return ft.Container(
-            content=text_control,
-            height=48,
-            on_click=on_click, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, border_radius=28, padding=0,
-            alignment=ft.Alignment(0, 0)
-        )
+        btn = create_button(text, on_click=on_click, height=48, expand=True)
+        if hasattr(self, 'network_action_buttons'):
+            self.network_action_buttons.append(btn)
+        return btn
 
     def show_toolbox_menu(self, e):
         self.toolbox_menu.visible = True
@@ -2312,9 +2390,7 @@ class MU5001:
         self.view_toolbox.update()
 
     def build_main_view(self):
-        # ==========================================
         # 全新设计的顶部统一导航栏 (完美对齐、防遮挡、自适应)
-        # ==========================================
         self.current_nav_index = 0  # 记录当前所在的页面索引
 
         def handle_nav_click(idx):
@@ -2403,6 +2479,7 @@ class MU5001:
         # 视图关联按钮 (兼容原有逻辑)
         btn_refresh = create_button("刷新数据", on_click=self.refresh_all, expand=True)
         btn_reboot_top = create_button("重启设备", on_click=self.on_reboot_device, expand=True)
+        self.network_action_buttons = [btn_refresh, btn_reboot_top]
         self.settings_card.relogin_btn = self.relogin_btn
         self.settings_card.refresh_btn = btn_refresh
 
@@ -2501,6 +2578,7 @@ class MU5001:
                 expand=True
             )
         )
+
     # 业务交互与任务调度
     async def on_reboot_device(self, e=None):
         show_toast(self.page, "正在发送重启指令...", True)
@@ -2539,6 +2617,10 @@ class MU5001:
             # 使用一个代表“自动”的图标
             self.theme_btn.icon = ft.Icons.BRIGHTNESS_AUTO
             self.theme_btn.tooltip = None
+
+        if self.page.width > 0 and self.is_control_mounted(self.main_view):
+            self.current_layout_key = None
+            self.on_page_resize(None)
             
         # 保存主题选择到本地
         if self.prefs:
@@ -2551,6 +2633,7 @@ class MU5001:
                 logger.warning(f"保存主题偏好失败: {ex}")
                 
         self.page.update()
+
     # 点击按钮时循环切换主题: 跟随系统 -> 深色 -> 浅色
     async def toggle_theme(self, e):
 
@@ -2569,6 +2652,9 @@ class MU5001:
         if self.page.theme_mode == ft.ThemeMode.SYSTEM:
             is_dark = self.page.platform_brightness == ft.Brightness.DARK
             self.page.bgcolor = ThemeColors.DARK_PAGE_BG if is_dark else ThemeColors.LIGHT_PAGE_BG
+            if self.page.width > 0 and self.is_control_mounted(self.main_view):
+                self.current_layout_key = None
+                self.on_page_resize(None)
             self.page.update()
 
     def start_auto_refresh(self):
@@ -2745,69 +2831,81 @@ class MU5001:
         if self.page.width <= 0: 
             return
 
-        # 提高判定阈值至 435，防止绝大多数当代竖屏手机拥挤或溢出
-        is_small = self.page.width < 435  
-        if self.current_is_small == is_small:
+        # 提高判定阈值至 435，超小屏阈值设置为 300
+        is_small = self.page.width < 435
+        is_ultra_small = self.page.width < 300
+        layout_key = "ultra" if is_ultra_small else ("small" if is_small else "regular")
+        if getattr(self, "current_layout_key", None) == layout_key:
             return
             
         self.current_is_small = is_small
+        self.current_layout_key = layout_key
         self.status_card.is_small = is_small
+        if hasattr(self, 'status_card'):
+            self.status_card.update_size(is_small, is_ultra_small)
         
         if hasattr(self, 'login_view'):
             self.login_view.update_size(is_small)
         if hasattr(self, 'settings_card'):
-            self.settings_card.update_size(is_small)
+            self.settings_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'reboot_card'):
-            self.reboot_card.update_size(is_small)
+            self.reboot_card.update_size(is_small, is_ultra_small)
+        if hasattr(self, 'device_list_card'):
+            self.device_list_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'toolbox_menu'):
-            self.toolbox_menu.spacing = 10 if is_small else 14
-            self.toolbox_menu.run_spacing = 10 if is_small else 14
+            self.toolbox_menu.spacing = 6 if is_ultra_small else (10 if is_small else 14)
+            self.toolbox_menu.run_spacing = 6 if is_ultra_small else (10 if is_small else 14)
         for item in getattr(self, 'toolbox_items', []):
             item.col = {"xs": 12, "sm": 12} if is_small else {"xs": 12, "sm": 6}
         for text in getattr(self, 'tool_item_texts', []):
-            text.size = 13 if is_small else 15
+            text.size = 11 if is_ultra_small else (13 if is_small else 15)
+        for btn in getattr(self, 'network_action_buttons', []):
+            btn.height = 42 if is_ultra_small else 48
+            if btn.style and getattr(btn.style, "text_style", None):
+                btn.style.text_style.size = 11 if is_ultra_small else (13 if is_small else 14)
             
-        font_size = 12 if is_small else 14
-        self.page.theme.text_theme = ft.TextTheme(
-            body_medium=ft.TextStyle(size=font_size),
-            label_large=ft.TextStyle(size=font_size),
-        )
+        font_size = 10 if is_ultra_small else (12 if is_small else 14)
+        self.apply_responsive_text_theme(font_size)
 
-        self.main_view.padding = 5 if is_small else 15
+        self.main_view.padding = 4 if is_ultra_small else (8 if is_small else 15)
 
         # ---------------------------------------------------------
         # 核心排版：完全统一的自适应缩放与折行逻辑
         # ---------------------------------------------------------
         if hasattr(self, 'top_header_bar'):
-            # 适当放大字号和图标，既然不切字了，就保证手表上也能看清
-            icon_sz = 20 if is_small else 22
-            txt_sz = 11 if is_small else 12
+            # 适当放大字号和图标
+            icon_sz = 17 if is_ultra_small else (22 if is_small else 22)
+            txt_sz = 9 if is_ultra_small else (11 if is_small else 12)
             
             for btn in self.nav_btns + self.action_btns:
                 btn.content.controls[0].size = icon_sz
                 btn.content.controls[1].size = txt_sz
+                btn.content.spacing = 1 if is_ultra_small else 4
+                btn.padding = ft.Padding(left=0, top=2, right=0, bottom=2) if is_ultra_small else ft.Padding(left=0, top=6, right=0, bottom=6)
                 
                 # 小屏则隐藏文字
                 btn.content.controls[1].visible = not is_small 
                 
                 if is_small:
-                    # 小屏“绝对均分”大法：开启 expand = True
+                    # 小屏“绝对均分”：开启 expand = True
                     # 强迫这一行的所有按钮宽度 100% 一模一样！彻底解决图标胖瘦不一导致的中心错位
                     btn.width = None
                     btn.expand = True
                 else:
-                    # 大屏幕恢复固定宽度，防止被无限拉成一长条
+                    # 大屏恢复固定宽度，防止被无限拉成一长条
                     btn.expand = False
                     btn.width = 50
 
             if is_small:
-                # 小屏分两行，依靠上面的 expand=True 自动变成完美对称的网格
-                self.top_header_bar.content = ft.Column(
+                # 小屏合并为一行图标导航，减少首屏挤占
+                self.top_header_bar.content = ft.Row(
                     [
-                        ft.Row(self.action_btns, spacing=0, alignment=ft.MainAxisAlignment.CENTER),
-                        ft.Row(self.nav_btns, spacing=0, alignment=ft.MainAxisAlignment.CENTER)
+                        *self.nav_btns,
+                        *self.action_btns
                     ],
-                    spacing=10
+                    spacing=0,
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER
                 )
             else:
                 self.top_header_bar.content = ft.Row(

@@ -82,8 +82,8 @@ class WiFiMode(str, Enum):
 # 超时与间隔配置（单位：秒、次）
 API_TIMEOUT = 5               # 普通 API 请求超时
 LOGIN_TIMEOUT = 3             # 登录相关请求超时
-AUTO_REFRESH_INTERVAL = 1     # 实时数据自动刷新间隔
-OFFLINE_FAIL_THRESHOLD = 3     # 连续3次失败后才显示断网
+AUTO_REFRESH_INTERVAL = 1   # 实时数据自动刷新间隔
+OFFLINE_FAIL_THRESHOLD = 2    # 连续2次失败后显示断网
 NET_SWITCH_DELAY = 0.5        # 网络断连/重连等待时间
 
 # 网络模式映射：界面显示名 <-> 设备读写参数
@@ -197,6 +197,17 @@ def mask_to_lte_bands(mask_str: str) -> List[str]:
     bands = [str(i + 1) for i in range(64) if mask & (1 << i)]
     logger.debug(f"掩码转 LTE 频段: {mask_str} -> {bands}")
     return bands
+
+# 极速探活工具：绕过 HTTP，直接使用底层 TCP 敲门，0.5秒连不上直接判死
+async def check_router_alive(ip: str = "192.168.0.1", port: int = 80) -> bool:
+    pure_ip = ip.replace("http://", "").replace("https://", "").split("/")[0]
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(pure_ip, port), timeout=0.5)
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
 
 # ==========================================
 # API 客户端封装
@@ -673,6 +684,7 @@ class MU5001Client:
 
         client = httpx.AsyncClient(
             http2=False,
+            trust_env=False,  # 无视系统VPN和代理
             headers={
                 "User-Agent": "Mozilla/5.0",
                 "Referer": f"{base_url}/index.html"
@@ -2502,6 +2514,8 @@ class MU5001:
 
     # 显示/隐藏断网界面的方法
     def show_disconnected_ui(self):
+        if hasattr(self, "disconnect_text"):
+            self.disconnect_text.value = "未连接 WiFi"
         self.content_area.visible = False
         self.disconnected_view.visible = True
         self.page.update()
@@ -2869,6 +2883,16 @@ class MU5001:
                     continue
                 self.is_refreshing = True
                 try:
+                    # 发起 HTTP 请求前，先用 TCP 极速探活
+                    is_alive = await check_router_alive(self.device_state.ip)
+                    if not is_alive:
+                        self.offline_count += 1
+                        if self.offline_count >= OFFLINE_FAIL_THRESHOLD and self.is_connected:
+                            self.is_connected = False
+                            self.show_disconnected_ui()
+                            self.page.update()
+                        continue # 探活失败，跳过后面的请求
+                    
                     await self.fetch_realtime()
                 except Exception as e:
                     logger.debug(f"后台刷新异常: {e}")
@@ -2876,10 +2900,9 @@ class MU5001:
                     self.is_refreshing = False
         except asyncio.CancelledError:
             logger.info("自动刷新任务已停止")
-
     async def fetch_realtime(self):
         if not self.device_state.client:
-            return
+            return False
         try:
             # 拿到强类型数据对象
             status = await self.client.get_realtime_status()
@@ -2893,9 +2916,11 @@ class MU5001:
             if is_kicked_out:
                 self.offline_count += 1
                 if self.offline_count < OFFLINE_FAIL_THRESHOLD:
-                    logger.debug(f"疑似凭证失效，等待复核: {self.offline_count}/{OFFLINE_FAIL_THRESHOLD}")
-                    return
-                raise RuntimeError("凭证已失效，设备已掉线")
+                    logger.debug(f"疑似断开连接，等待复核: {self.offline_count}/{OFFLINE_FAIL_THRESHOLD}")
+                    return False
+                self.is_connected = False
+                self.show_disconnected_ui()
+                return False
             
             # 恢复连接时的处理
             if not self.is_connected:
@@ -2910,6 +2935,7 @@ class MU5001:
             
             # 原本的 settings_card 只需要判断数据连接开关，这里做个兼容包装
             self.settings_card.update_realtime({"ppp_status": "connected" if status.is_data_connected else "disconnected"})
+            return True
         except Exception as e:
             logger.debug(f"实时刷新异常: {e}")
             
@@ -2918,6 +2944,7 @@ class MU5001:
             if self.offline_count >= OFFLINE_FAIL_THRESHOLD and self.is_connected:
                 self.is_connected = False
                 self.show_disconnected_ui()
+            return False
 
     async def refresh_all(self, e=None):
         if not self.device_state.client:
@@ -2981,15 +3008,24 @@ class MU5001:
             dev_status = " | 开发者模式已解锁" if self.device_state.dev_unlocked else " | 开发者模式未解锁"
             self.status_card.set_global_status("数据读取成功" + dev_status, ft.Colors.PRIMARY if self.device_state.dev_unlocked else ft.Colors.ERROR)
             
-            await self.fetch_realtime()
+            realtime_ok = False
+            for _ in range(OFFLINE_FAIL_THRESHOLD):
+                if await self.fetch_realtime():
+                    realtime_ok = True
+                    break
+                await asyncio.sleep(0.5)
+            if not realtime_ok:
+                raise RuntimeError("实时数据刷新失败")
             if e:
                 show_toast(self.page, "数据刷新成功", True)
             logger.info("全量配置刷新完成")
+            return True
         except Exception as ex: # 注意这里用了 ex 防止和参数 e 冲突
             logger.error(f"全量刷新异常: {ex}", exc_info=DEBUG_MODE)
             self.status_card.set_global_status("读取失败，请检查连接", ft.Colors.ERROR)
             if e:
                 show_toast(self.page, "数据读取失败，请检查连接", False)
+            return False
 
     async def on_login_success(self):
         self.login_view.visible = False
@@ -3025,14 +3061,20 @@ class MU5001:
                 except Exception as conn_err:
                     logger.warning(f"重登成功，开启数据连接失败: {conn_err}")
 
+                verified = await self.refresh_all()
+                if not verified:
+                    raise RuntimeError("重登后读取设备数据失败")
+
+                self.offline_count = 0
+                self.is_connected = True
+                self.show_connected_ui()
+
                 if dev_ok:
                     self.status_card.set_global_status("重登成功，开发者模式解锁成功，正在开启数据连接", ft.Colors.PRIMARY)
-                    show_toast(self.page, "重登成功，开发者模式解锁成功，正在开启数据连接", True)
+                    show_toast(self.page, "重登成功", True)
                 else:
                     self.status_card.set_global_status("重登成功，开发者模式解锁失败", ft.Colors.ERROR)
                     show_toast(self.page, "重登成功，开发者模式解锁失败", False)
-                
-                await self.refresh_all()
                 
                 # 重登和全量刷新顺利完成后，重新启动后台刷新任务
                 self.start_auto_refresh()

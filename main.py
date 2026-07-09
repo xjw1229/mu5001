@@ -864,8 +864,9 @@ class LoginView(ft.Container):
             scroll=ft.ScrollMode.AUTO,
         )
 
-    def update_size(self, is_small: bool):
-        self.padding = ft.Padding(left=5, top=15, right=5, bottom=15) if is_small else 15
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        # 仅在超小屏时内边距为5(拉满左右)，其他小屏和大屏都保持正常内边距15
+        self.padding = ft.Padding(left=5, top=15, right=5, bottom=15) if is_ultra_small else 15
         self.sec_style.size = 11 if is_small else 14
         
         # 小屏标题字号
@@ -2286,12 +2287,29 @@ class DeviceListCard(ft.Container):
             button_text_size = 11 if self.is_ultra_small_layout else (13 if self.is_small_layout else 14)
             self.txt_device_count.value = f"{status.macs_count} 台"
             self.device_list_col.controls.clear()
-            if not status.connected_devices:
+            all_devices = []
+            seen_macs = set()
+
+            for dev in status.connected_devices:
+                mac = str(dev.get("mac", "")).upper()
+                seen_macs.add(mac)
+                all_devices.append(dev)
+
+            for dev in blacklisted_devices:
+                mac = str(dev.get("mac", "")).upper()
+                if mac not in seen_macs:
+                    all_devices.append({
+                        "name": dev.get("name", "未知设备"),
+                        "ip": "已断开 (黑名单)",
+                        "mac": mac
+                    })
+
+            if not all_devices:
                 self.device_list_col.controls.append(
-                    ft.Text("暂无设备连接", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
+                    ft.Text("暂无设备连接或拉黑", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
                 )
             else:
-                for i, dev in enumerate(status.connected_devices[:display_limit]):
+                for i, dev in enumerate(all_devices[:display_limit]):
                     is_blocked = str(dev.get("mac", "")).upper() in black_macs
                     action_btn = create_button(
                         "已拉黑" if is_blocked else "拉黑",
@@ -3077,7 +3095,7 @@ class MU5001:
                 self.disconnect_btn.style.text_style.size = 11 if is_ultra_small else (13 if is_small else 14)
         
         if hasattr(self, 'login_view'):
-            self.login_view.update_size(is_small)
+            self.login_view.update_size(is_small, is_ultra_small)
         if hasattr(self, 'settings_card'):
             self.settings_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'reboot_card'):

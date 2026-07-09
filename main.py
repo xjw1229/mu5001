@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Set, Callable, Union
+from enum import Enum
 
 # ==========================================
 # 日志配置
@@ -73,10 +74,16 @@ class ThemeColors:
         "error_container": "#FFE0DD"            # 失败提示背景
     }
 
-# 超时与间隔配置（单位：秒）
+# WiFi 双频状态配置
+class WiFiMode(str, Enum):
+    MERGED = "merged"
+    SEPARATED = "separated"
+
+# 超时与间隔配置（单位：秒、次）
 API_TIMEOUT = 5               # 普通 API 请求超时
 LOGIN_TIMEOUT = 3             # 登录相关请求超时
 AUTO_REFRESH_INTERVAL = 1     # 实时数据自动刷新间隔
+OFFLINE_FAIL_THRESHOLD = 3     # 连续3次失败后才显示断网
 NET_SWITCH_DELAY = 0.5        # 网络断连/重连等待时间
 
 # 网络模式映射：界面显示名 <-> 设备读写参数
@@ -243,6 +250,7 @@ class RealtimeStatus:
     active_band_5g: str
     active_band_4g: str
     connected_devices: list
+    blacklisted_devices: list
 
 # 封装设备登录、配置读写、状态查询等所有 HTTP 交互，自动维护会话 Cookie 与 AD 鉴权计算。
 class MU5001Client:
@@ -266,8 +274,8 @@ class MU5001Client:
 
     # 异步 GET 查询设备配置，cmd 支持逗号分隔多命令，multi_data 启用多数据返回模式
     async def get_cmd(self, cmd: str, multi_data: bool = False) -> Dict:
-        async with self._request_lock:
-            return await self._get_cmd_unlocked(cmd, multi_data)
+        # 移除互斥锁，允许 GET 请求高并发，不再排队等待，大幅提升刷新丝滑度
+        return await self._get_cmd_unlocked(cmd, multi_data)
 
     async def _get_cmd_unlocked(self, cmd: str, multi_data: bool = False) -> Dict:
         if not self.state.client:
@@ -321,7 +329,9 @@ class MU5001Client:
             )
             resp.raise_for_status()
             result = str(resp.json().get("result", "")).strip()
-            success = result in ["0", "success", "4"]
+            # 消除魔术字符串：将成功状态码统一定义为一个集合
+            SUCCESS_CODES = {"0", "success", "4"}
+            success = result in SUCCESS_CODES
             if success:
                 logger.info(f"POST 成功: {goform_id}")
             else:
@@ -334,6 +344,58 @@ class MU5001Client:
     # 异步设置 WiFi 覆盖范围
     async def set_wifi_coverage(self, coverage_val: str) -> bool:
         return await self.post_cmd("setWiFiCoverage", {"WiFiCoverage": coverage_val})
+
+    # 设备列表
+    async def get_device_access_control_list(self) -> Dict:
+        try:
+            return await self.get_cmd("queryDeviceAccessControlList")
+        except Exception as e:
+            logger.error(f"读取设备访问控制列表失败: {e}", exc_info=DEBUG_MODE)
+            return {}
+
+    def _split_acl_list(self, value: str) -> List[str]:
+        return [item.strip() for item in str(value or "").split(";") if item.strip()]
+
+    async def set_device_blacklist(self, devices: list) -> bool:
+        macs = []
+        names = []
+        seen = set()
+        for dev in devices:
+            mac = str(dev.get("mac", "")).strip().upper()
+            if not mac or mac in seen:
+                continue
+            seen.add(mac)
+            macs.append(mac)
+            names.append(str(dev.get("name", "")).strip() or mac)
+        return await self.post_cmd("setDeviceAccessControlList", {
+            "AclMode": "2",
+            "WhiteMacList": "",
+            "BlackMacList": ";".join(macs) + (";" if macs else ""),
+            "WhiteNameList": "",
+            "BlackNameList": ";".join(names) + (";" if names else "")
+        })
+
+    async def get_blacklisted_devices(self) -> list:
+        acl = await self.get_device_access_control_list()
+        macs = self._split_acl_list(acl.get("BlackMacList", ""))
+        names = self._split_acl_list(acl.get("BlackNameList", ""))
+        return [{"mac": mac.upper(), "name": names[i] if i < len(names) else mac.upper()} for i, mac in enumerate(macs)]
+
+    async def block_device(self, mac: str, name: str) -> bool:
+        devices = await self.get_blacklisted_devices()
+        mac = str(mac or "").strip().upper()
+        if not mac:
+            return False
+        for dev in devices:
+            if dev.get("mac") == mac:
+                return True
+        devices.append({"mac": mac, "name": str(name or "").strip() or mac})
+        return await self.set_device_blacklist(devices)
+
+    async def unblock_device(self, mac: str) -> bool:
+        mac = str(mac or "").strip().upper()
+        devices = [dev for dev in await self.get_blacklisted_devices() if dev.get("mac") != mac]
+        return await self.set_device_blacklist(devices)
 
     # WiFi 设置：切换双频合一/分离模式
     async def apply_wifi_mode(self, is_merged: bool) -> bool:
@@ -540,20 +602,26 @@ class MU5001Client:
         
         macs_count = 0
         connected_devices = []
+        blacklisted_devices = []
+        macs = set()
         try:
             wifi_res = await self.get_cmd("station_list")
             lan_res = await self.get_cmd("lan_station_list")
-            macs = set()
             for d in wifi_res.get("station_list", []) + lan_res.get("lan_station_list", []):
                 mac = d.get("mac_addr", "").strip().upper()
                 if mac and mac not in macs:
                     macs.add(mac)
                     name = d.get("hostname", "").strip() or "未知设备"
                     ip = d.get("ip_addr", "").strip() or "未知 IP"
-                    connected_devices.append({"name": name, "ip": ip})
-            macs_count = len(macs)
+                    connected_devices.append({"name": name, "ip": ip, "mac": mac})
         except Exception:
             pass
+        try:
+            blacklisted_devices = await self.get_blacklisted_devices()
+        except Exception:
+            blacklisted_devices = []
+        black_macs = {str(dev.get("mac", "")).upper() for dev in blacklisted_devices}
+        macs_count = len(macs - black_macs)
 
         status_str = res.get("ppp_status", "").lower().replace("disconnected", "off")
         
@@ -593,7 +661,8 @@ class MU5001Client:
             is_data_connected="connected" in status_str,
             active_band_5g=str(res.get('nr5g_action_band', '')).strip(), 
             active_band_4g=str(res.get('wan_active_band', '')).strip(),
-            connected_devices=connected_devices
+            connected_devices=connected_devices,
+            blacklisted_devices=blacklisted_devices
         )
     async def login(self, ip: str, password: str) -> bool:
         logger.info(f"开始登录设备: {ip}")
@@ -728,12 +797,6 @@ def show_toast(page: ft.Page, msg: str, success: bool = True) -> None:
     page.overlay.append(snack)
     snack.open = True
     page.update()
-
-def clamp_text_sizes(root, max_text_size: int, max_label_size: Optional[int] = None) -> None:
-    pass  # 已被全局 Theme 替代，无需再消耗 CPU 遍历 UI 树
-
-def restore_text_sizes(root) -> None:
-    pass  # 已被全局 Theme 替代
 
 # ==========================================
 # eCellID 工具函数
@@ -968,7 +1031,6 @@ class StatusCard(ft.Container):
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def update_size(self, is_small: bool, is_ultra_small: bool = False):
-        restore_text_sizes(self)
         self.is_small = is_small
         size = 11 if is_ultra_small else (13 if is_small else 14)
         spacing = 2 if is_ultra_small else (4 if is_small else 6)
@@ -990,8 +1052,6 @@ class StatusCard(ft.Container):
         self.padding = 8 if is_ultra_small else (12 if is_small else 15)
         self.border_radius = 8 if is_ultra_small else (10 if is_small else 12)
         self.content.spacing = 6 if is_ultra_small else (8 if is_small else 10)
-        if is_ultra_small:
-            clamp_text_sizes(self, 11, 10)
 
     def set_global_status(self, text: str, color: str):
         if self.status_text.value != text or self.status_text.color != color:
@@ -1079,7 +1139,7 @@ class StatusCard(ft.Container):
 
         nr_cell_bits = 14 if is_14bit_provider else 12
         ecellid_str = f"eCellID (小区编号):{sep}--"
-        is_5g = any(k in status.network_type.upper() for k in ['5G', 'SA', 'NSA'])
+        is_5g = bool({"5G", "SA", "NSA"} & set(status.network_type.upper().split()))
 
         if is_5g and status.cell_id_5g and status.cell_id_5g != "0":
             dec_val = parse_cell_id(status.cell_id_5g)
@@ -1184,7 +1244,6 @@ class RebootCard(ft.Container):
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def update_size(self, is_small: bool, is_ultra_small: bool = False):
-        restore_text_sizes(self)
         self.is_small_layout = is_small
         if hasattr(self, 'txt_reboot_title'): self.txt_reboot_title.size = 13 if is_ultra_small else (16 if is_small else 18)
         
@@ -1224,7 +1283,6 @@ class RebootCard(ft.Container):
             self.padding = 8
             self.border_radius = 8
             self.content.spacing = 8
-            clamp_text_sizes(self, 12, 10)
         try:
             self.update()
         except Exception:
@@ -1391,7 +1449,7 @@ class SettingsCard(ft.Container):
 
     def build_ui(self):
         # WiFi 休眠
-        sleep_opts = [("0", "永不休眠"), ("5", "5 分钟"), ("10", "10 分钟"), ("20", "20 分钟"), ("30", "30 分钟"), ("60", "1 小时"), ("120", "2 小时")]
+        sleep_opts = [("0", "永不休眠"), ("5", "5分钟"), ("10", "10分钟"), ("20", "20分钟"), ("30", "30分钟"), ("60", "1小时"), ("120", "2小时")]
         self.wifi_sleep = create_dropdown("", [ft.dropdown.Option(k, v) for k, v in sleep_opts], "10")
         btn_wifi_sleep = create_button("保存休眠", on_click=self.on_wifi_sleep_save)
 
@@ -1415,15 +1473,15 @@ class SettingsCard(ft.Container):
 
         # 横向自动折行排列
         self.wifi_mode = ft.RadioGroup(
-            value="merged",
+            value=WiFiMode.MERGED,
             content=ft.ResponsiveRow([
-                ft.Container(content=ft.Radio(value="merged", label="双频合一", fill_color=ft.Colors.PRIMARY, label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE)), col={"xs": 12, "sm": 6, "md": 3}, padding=0, margin=0),
-                ft.Container(content=ft.Radio(value="separated", label="双频分离", fill_color=ft.Colors.PRIMARY, label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE)), col={"xs": 12, "sm": 6, "md": 3}, padding=0, margin=0)
+                ft.Container(content=ft.Radio(value=WiFiMode.MERGED, label="双频合一", fill_color=ft.Colors.PRIMARY, label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE)), col={"xs": 12, "sm": 6, "md": 3}, padding=0, margin=0),
+                ft.Container(content=ft.Radio(value=WiFiMode.SEPARATED, label="双频分离", fill_color=ft.Colors.PRIMARY, label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE)), col={"xs": 12, "sm": 6, "md": 3}, padding=0, margin=0)
             ], spacing=10, run_spacing=5),
             on_change=self.on_wifi_mode_change
         )
         
-        # 三个复选框
+        # WiFi 广播复选框
         self.cb_broadcast_merged = create_checkbox(label="WiFi 广播", value=True)
         self.cb_broadcast_24g = create_checkbox(label="2.4GHz", value=True)
         self.cb_broadcast_5g = create_checkbox(label="5GHz", value=True)
@@ -1445,7 +1503,7 @@ class SettingsCard(ft.Container):
             isolate = create_checkbox(label="", value=False)
             auth_opts = [("OPEN", "OPEN"), ("WPA2PSK", "WPA2-PSK"), ("WPAPSKWPA2PSK", "WPA/WPA2-PSK"), ("WPA3PSK", "WPA3-PSK"), ("WPA2PSKWPA3PSK", "WPA2/WPA3-PSK")]
             auth = create_dropdown("安全模式", [ft.dropdown.Option(k, v) for k, v in auth_opts], "WPA2PSK")
-            auth.data = {"base_options": auth_opts, "small_options": [("OPEN", "OPEN"), ("WPA2PSK", "WPA2"), ("WPAPSKWPA2PSK", "WPA/W2"), ("WPA3PSK", "WPA3"), ("WPA2PSKWPA3PSK", "W2/W3")]}
+            auth.data = {"base_options": auth_opts, "small_options": [("OPEN", "OPEN"), ("WPA2PSK", "WPA2"), ("WPAPSKWPA2PSK", "WPA/2"), ("WPA3PSK", "WPA3"), ("WPA2PSKWPA3PSK", "WPA2/3")]}
             password = create_text_field(label="密码", password=True, can_reveal_password=True, multiline=True, max_lines=3)
             broadcast.data = {"base_label": "广播SSID", "small_label": "广播SSID"}
             isolate.data = {"base_label": "客户端隔离", "small_label": "客户端隔离"}
@@ -1641,8 +1699,6 @@ class SettingsCard(ft.Container):
 
     # 重写 update 方法，确保被分离到工具箱的 wifi_section 也能同步刷新数据
     def update_size(self, is_small: bool, is_ultra_small: bool = False):
-        restore_text_sizes(getattr(self, "content", None))
-        restore_text_sizes(getattr(self, "wifi_section", None))
 
         if hasattr(self, 'txt_wifi_title'): self.txt_wifi_title.size = 13 if is_ultra_small else (16 if is_small else 18)
         if hasattr(self, 'txt_adv_net_title'): self.txt_adv_net_title.size = 13 if is_ultra_small else (16 if is_small else 18)
@@ -1765,10 +1821,6 @@ class SettingsCard(ft.Container):
         for text in self.compact_texts:
             text.size = hint_size
 
-        if is_ultra_small:
-            clamp_text_sizes(self.content, 12, 10)
-            clamp_text_sizes(self.wifi_section, 12, 10)
-
         try:
             self.update()
         except Exception:
@@ -1834,12 +1886,12 @@ class SettingsCard(ft.Container):
 
         # ApBroadcastDisabled: 0 代表广播(开启), 1 代表隐藏(关闭)
         if wifi_lbd == "1":
-            self.wifi_mode.value = "merged"
-            self.actual_wifi_mode = "merged"  # 记录真实状态
+            self.wifi_mode.value = WiFiMode.MERGED
+            self.actual_wifi_mode = WiFiMode.MERGED  # 记录真实状态
             self.cb_broadcast_merged.value = (b_24 == "0") 
         else:
-            self.wifi_mode.value = "separated"
-            self.actual_wifi_mode = "separated"  # 记录真实状态
+            self.wifi_mode.value = WiFiMode.SEPARATED
+            self.actual_wifi_mode = WiFiMode.SEPARATED  # 记录真实状态
             self.cb_broadcast_24g.value = (b_24 == "0")
             self.cb_broadcast_5g.value = (b_5g == "0")
             
@@ -1904,13 +1956,10 @@ class SettingsCard(ft.Container):
         for cb in self.net_mode_cbs.values():
             cb.disabled = disabled
             
-        # 跨区域联动：同时物理变灰锁死“重登”和“刷新数据”按钮
-        if hasattr(self, 'relogin_btn'):
-            self.relogin_btn.disabled = disabled
-            self.relogin_btn.update()
-        if hasattr(self, 'refresh_btn'):
-            self.refresh_btn.disabled = disabled
-            self.refresh_btn.update()
+        # 跨区域联动：同时物理变灰锁死顶部的“刷新”和卡片内的“刷新数据”按钮
+        if hasattr(self, 'top_refresh_btn'):
+            self.top_refresh_btn.disabled = disabled
+            self.top_refresh_btn.update()
         
         # 强制瞬间刷新控件
         self.data_switch.update()
@@ -2115,9 +2164,13 @@ class SettingsCard(ft.Container):
     async def on_apply_wifi_mode(self, e):
         async def close_dlg(e):
             dlg.open = False
+            if dlg in self.app_page.overlay:
+                self.app_page.overlay.remove(dlg) # 彻底销毁弹窗，释放内存
             self.app_page.update()
         async def confirm_dlg(e):
             dlg.open = False
+            if dlg in self.app_page.overlay:
+                self.app_page.overlay.remove(dlg) # 彻底销毁弹窗，释放内存
             self.app_page.update()
             await self._execute_apply_wifi_mode()
             
@@ -2192,9 +2245,13 @@ class SettingsCard(ft.Container):
 # UI 组件拆分 - 设备列表卡片
 # ==========================================
 class DeviceListCard(ft.Container):
-    def __init__(self, page: ft.Page):  
+    def __init__(self, page: ft.Page, on_block_device: Callable = None, on_unblock_device: Callable = None):  
         super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
         self.app_page = page 
+        self.on_block_device = on_block_device
+        self.on_unblock_device = on_unblock_device
+        self.is_small_layout = False
+        self.is_ultra_small_layout = False
         self._last_data_hash = {}
         
         # 接入设备
@@ -2215,9 +2272,18 @@ class DeviceListCard(ft.Container):
         available_height = self.app_page.height - 250
         display_limit = max(4, int(available_height / 65)) 
         
-        dev_hash = f"{display_limit}_{str(status.connected_devices)}"
+        blacklisted_devices = getattr(status, "blacklisted_devices", [])
+        black_macs = {str(dev.get("mac", "")).upper() for dev in blacklisted_devices}
+        dev_hash = f"{display_limit}_{self.is_small_layout}_{self.is_ultra_small_layout}_{str(status.connected_devices)}_{str(blacklisted_devices)}"
         
         if self._last_data_hash.get('device_list') != dev_hash:
+            name_size = 10 if self.is_ultra_small_layout else (12 if self.is_small_layout else 15)
+            detail_size = 9 if self.is_ultra_small_layout else (10 if self.is_small_layout else 13)
+            item_padding = 6 if self.is_ultra_small_layout else (8 if self.is_small_layout else 10)
+            item_spacing = 3 if self.is_ultra_small_layout else (5 if self.is_small_layout else 8)
+            button_height = 30 if self.is_ultra_small_layout else (34 if self.is_small_layout else 36)
+            button_width = max(120, int(self.app_page.width - 70)) if self.is_small_layout else None
+            button_text_size = 11 if self.is_ultra_small_layout else (13 if self.is_small_layout else 14)
             self.txt_device_count.value = f"{status.macs_count} 台"
             self.device_list_col.controls.clear()
             if not status.connected_devices:
@@ -2226,14 +2292,33 @@ class DeviceListCard(ft.Container):
                 )
             else:
                 for i, dev in enumerate(status.connected_devices[:display_limit]):
+                    is_blocked = str(dev.get("mac", "")).upper() in black_macs
+                    action_btn = create_button(
+                        "已拉黑" if is_blocked else "拉黑",
+                        on_click=((lambda e, d=dev: self.on_unblock_device and self.on_unblock_device(d)) if is_blocked else (lambda e, d=dev: self.on_block_device and self.on_block_device(d))),
+                        height=button_height,
+                        expand=False
+                    )
+                    if button_width:
+                        action_btn.width = button_width
+                    if action_btn.style and getattr(action_btn.style, "text_style", None):
+                        action_btn.style.text_style.size = button_text_size
+                    text_col = ft.Column([
+                        ft.Text(f"{dev['name']}", size=name_size, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+                        ft.Text(f"IP: {dev['ip']}", size=detail_size, color=ft.Colors.ON_SURFACE_VARIANT),
+                        ft.Text(f"MAC: {dev.get('mac', '未知')}", size=detail_size, color=ft.Colors.ON_SURFACE_VARIANT)
+                    ], spacing=1 if self.is_ultra_small_layout else 2, expand=not self.is_small_layout)
+                    item_content = ft.Column([
+                        text_col,
+                        ft.Container(action_btn, alignment=ft.Alignment(0, 0))
+                    ], spacing=item_spacing) if self.is_small_layout else ft.Row([
+                        text_col,
+                        action_btn
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER)
                     self.device_list_col.controls.append(
                         ft.Container(
-                            content=ft.Column([
-                                # 设备名称完整显示（如果过长会自动换行）
-                                ft.Text(f"{dev['name']}", size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
-                                ft.Text(dev['ip'], size=13, color=ft.Colors.ON_SURFACE_VARIANT)
-                            ], spacing=2),
-                            padding=10,
+                            content=item_content,
+                            padding=item_padding,
                             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
                             border_radius=8
                         )
@@ -2242,14 +2327,17 @@ class DeviceListCard(ft.Container):
             self.update()
 
     def update_size(self, is_small: bool, is_ultra_small: bool = False):
-        restore_text_sizes(self)
+        layout_changed = self.is_small_layout != is_small or self.is_ultra_small_layout != is_ultra_small
+        self.is_small_layout = is_small
+        self.is_ultra_small_layout = is_ultra_small
         self.padding = 8 if is_ultra_small else (12 if is_small else 15)
         self.border_radius = 8 if is_ultra_small else 12
-        self.content.spacing = 8 if is_ultra_small else 10
-        self.device_list_col.spacing = 6 if is_ultra_small else 10
-        self.txt_device_label.size = 13 if is_ultra_small else (18 if not is_small else 16)
-        self.txt_device_count.size = 12 if is_ultra_small else 14
-        clamp_text_sizes(self, 12 if is_ultra_small else 14, 11 if is_ultra_small else 13)
+        self.content.spacing = 6 if is_ultra_small else (8 if is_small else 10)
+        self.device_list_col.spacing = 5 if is_ultra_small else (7 if is_small else 10)
+        self.txt_device_label.size = 12 if is_ultra_small else (18 if not is_small else 16)
+        self.txt_device_count.size = 11 if is_ultra_small else 14
+        if layout_changed:
+            self._last_data_hash.clear()
         try:
             self.update()
         except Exception:
@@ -2292,6 +2380,11 @@ class MU5001:
         self.current_is_small = None
         self.tool_item_texts: List[ft.Text] = []
         self.prefs = None
+        self._resize_task = None
+        
+        # 网络连接状态变量
+        self.offline_count = 0
+        self.is_connected = True
 
     def apply_responsive_text_theme(self, font_size: int):
         title_size = font_size + 4  # 标题永远比正文大4号，跟随正文一起自动缩放
@@ -2340,7 +2433,7 @@ class MU5001:
         self.status_card = StatusCard()
         self.reboot_card = RebootCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
         self.settings_card = SettingsCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status, on_reboot_cb=self.on_reboot_device)
-        self.device_list_card = DeviceListCard(self.page)
+        self.device_list_card = DeviceListCard(self.page, on_block_device=self.on_block_device, on_unblock_device=self.on_unblock_device)
 
         # 构建主视图布局 (这一步会创建 self.theme_btn)
         self.build_main_view()
@@ -2388,6 +2481,17 @@ class MU5001:
         self.settings_card.wifi_section.visible = False
         self.reboot_card.visible = True
         self.view_toolbox.update()
+
+    # 显示/隐藏断网界面的方法
+    def show_disconnected_ui(self):
+        self.content_area.visible = False
+        self.disconnected_view.visible = True
+        self.page.update()
+
+    def show_connected_ui(self):
+        self.content_area.visible = True
+        self.disconnected_view.visible = False
+        self.page.update()
 
     def build_main_view(self):
         # 全新设计的顶部统一导航栏 (完美对齐、防遮挡、自适应)
@@ -2467,8 +2571,8 @@ class MU5001:
         # 2. 右侧操作按钮
         self.logout_btn = create_nav_btn(ft.Icons.LOGOUT, "退出", self.do_logout)
         self.theme_btn_container = create_nav_btn(ft.Icons.DARK_MODE, "主题", self.toggle_theme)
-        self.relogin_btn = create_nav_btn(ft.Icons.REFRESH, "重登", self.do_relogin)
-        self.action_btns = [self.logout_btn, self.theme_btn_container, self.relogin_btn]
+        self.top_refresh_btn = create_nav_btn(ft.Icons.REFRESH, "刷新", self.refresh_all)
+        self.action_btns = [self.logout_btn, self.theme_btn_container, self.top_refresh_btn]
 
         # 将 theme_btn 指向内部的 Icon，兼容后续的主题切换逻辑
         self.theme_btn = self.theme_btn_container.content.controls[0]
@@ -2480,7 +2584,7 @@ class MU5001:
         btn_refresh = create_button("刷新数据", on_click=self.refresh_all, expand=True)
         btn_reboot_top = create_button("重启设备", on_click=self.on_reboot_device, expand=True)
         self.network_action_buttons = [btn_refresh, btn_reboot_top]
-        self.settings_card.relogin_btn = self.relogin_btn
+        self.settings_card.top_refresh_btn = self.top_refresh_btn
         self.settings_card.refresh_btn = btn_refresh
 
         # 视图 1：网络信息
@@ -2551,6 +2655,35 @@ class MU5001:
             expand=True
         )
 
+        # 未连接路由器的提示界面
+        # 1. 提取出图标、文字和按钮，方便后续根据屏幕大小自动缩放
+        self.disconnect_icon = ft.Icon(ft.Icons.ROUTER_OUTLINED, size=80, color=ft.Colors.PRIMARY)
+        # 强制文字居中对齐，防止在极窄屏幕下换行时偏向左侧
+        self.disconnect_text = ft.Text("未连接 WiFi", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, text_align=ft.TextAlign.CENTER)
+        self.disconnect_btn = create_button("重新登录", on_click=self.do_relogin, expand=False)
+        
+        self.disconnected_view = ft.Container(
+            content=ft.Column(
+                [
+                    self.disconnect_icon,
+                    self.disconnect_text,
+                    ft.Container(height=10), # 稍微缩小一点按钮和文字的间距
+                    self.disconnect_btn
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=5
+            ),
+            expand=True,
+            visible=False,
+            alignment=ft.Alignment(0, 0)
+        )
+        # 用 Stack 将主页面和提示界面叠放
+        self.main_content_wrapper = ft.Stack(
+            controls=[self.content_area, self.disconnected_view],
+            expand=True
+        )
+
         # 手势检测器
         self.gesture_area = ft.GestureDetector(
             content=self.content_area,
@@ -2568,7 +2701,7 @@ class MU5001:
                         [
                             self.top_header_bar,
                             ft.Divider(height=10, thickness=2, color=ft.Colors.OUTLINE_VARIANT),
-                            self.content_area
+                            self.main_content_wrapper  # 用 wrapper 实现了界面层叠
                         ],
                         horizontal_alignment=ft.CrossAxisAlignment.STRETCH, spacing=0, expand=True
                     )
@@ -2593,6 +2726,49 @@ class MU5001:
             logger.error(f"重启设备异常: {e}", exc_info=DEBUG_MODE)
             self.status_card.set_global_status("重启失败", ft.Colors.ERROR)
             show_toast(self.page, "设备重启失败", False)
+
+    def on_block_device(self, dev: dict):
+        asyncio.create_task(self._block_device(dev))
+
+    def on_unblock_device(self, dev: dict):
+        asyncio.create_task(self._unblock_device(dev))
+
+    async def _block_device(self, dev: dict):
+        mac = str(dev.get("mac", "")).strip().upper()
+        name = str(dev.get("name", "")).strip() or mac
+        if not mac:
+            show_toast(self.page, "设备 MAC 为空", False)
+            return
+        show_toast(self.page, "正在拉黑设备...", True)
+        try:
+            ok = await self.client.block_device(mac, name)
+            if ok:
+                self.device_list_card._last_data_hash.clear()
+                await self.fetch_realtime()
+                show_toast(self.page, "设备已拉黑", True)
+            else:
+                show_toast(self.page, "拉黑失败", False)
+        except Exception as e:
+            logger.error(f"拉黑设备异常: {e}", exc_info=DEBUG_MODE)
+            show_toast(self.page, "拉黑失败", False)
+
+    async def _unblock_device(self, dev: dict):
+        mac = str(dev.get("mac", "")).strip().upper()
+        if not mac:
+            show_toast(self.page, "设备 MAC 为空", False)
+            return
+        show_toast(self.page, "正在解除拉黑...", True)
+        try:
+            ok = await self.client.unblock_device(mac)
+            if ok:
+                self.device_list_card._last_data_hash.clear()
+                await self.fetch_realtime()
+                show_toast(self.page, "已解除拉黑", True)
+            else:
+                show_toast(self.page, "解除失败", False)
+        except Exception as e:
+            logger.error(f"解除拉黑异常: {e}", exc_info=DEBUG_MODE)
+            show_toast(self.page, "解除失败", False)
 
     # 动态切换主题函数
     async def apply_theme(self, theme_str: str):
@@ -2690,6 +2866,25 @@ class MU5001:
             # 拿到强类型数据对象
             status = await self.client.get_realtime_status()
             
+            # 精准识别“掉线”
+            # 如果核心字段（IMSI、主板温度）同时为空，说明凭证已失效
+            is_kicked_out = (
+                not status.imsi and 
+                status.temp_mdm in ("", "--")
+            )
+            if is_kicked_out:
+                self.offline_count += 1
+                if self.offline_count < OFFLINE_FAIL_THRESHOLD:
+                    logger.debug(f"疑似凭证失效，等待复核: {self.offline_count}/{OFFLINE_FAIL_THRESHOLD}")
+                    return
+                raise RuntimeError("凭证已失效，设备已掉线")
+            
+            # 恢复连接时的处理
+            if not self.is_connected:
+                self.is_connected = True
+                self.show_connected_ui()
+            self.offline_count = 0  # 成功拿到数据，重置断网计数
+            
             self.reboot_card.update_time_display()
             # 直接把对象丢给卡片
             self.status_card.update_realtime(status)
@@ -2699,6 +2894,12 @@ class MU5001:
             self.settings_card.update_realtime({"ppp_status": "connected" if status.is_data_connected else "disconnected"})
         except Exception as e:
             logger.debug(f"实时刷新异常: {e}")
+            
+            # 断网判定处理
+            self.offline_count += 1
+            if self.offline_count >= OFFLINE_FAIL_THRESHOLD and self.is_connected:
+                self.is_connected = False
+                self.show_disconnected_ui()
 
     async def refresh_all(self, e=None):
         if not self.device_state.client:
@@ -2788,6 +2989,12 @@ class MU5001:
         if not self.device_state.ip or not self.device_state.password:
             show_toast(self.page, "本地无缓存密码，请重启 APP", False)
             return
+
+        # 重登前先强制取消后台自动刷新任务，防止并发请求时底层客户端被销毁导致报错
+        if self.auto_refresh_task and not self.auto_refresh_task.done():
+            self.auto_refresh_task.cancel()
+            self.auto_refresh_task = None
+
         show_toast(self.page, "正在重登...", True)
         try:
             success = await self.client.login(self.device_state.ip, self.device_state.password)
@@ -2806,7 +3013,11 @@ class MU5001:
                 else:
                     self.status_card.set_global_status("重登成功，开发者模式解锁失败", ft.Colors.ERROR)
                     show_toast(self.page, "重登成功，开发者模式解锁失败", False)
+                
                 await self.refresh_all()
+                
+                # 重登和全量刷新顺利完成后，重新启动后台刷新任务
+                self.start_auto_refresh()
             else:
                 self.status_card.set_global_status("重新登录失败，可能密码已修改或被锁定", ft.Colors.ERROR)
                 show_toast(self.page, "重登失败", False)
@@ -2814,7 +3025,6 @@ class MU5001:
             logger.error(f"重新登录异常: {ex}", exc_info=DEBUG_MODE)
             self.status_card.set_global_status("重登失败，请检查网络", ft.Colors.ERROR)
             show_toast(self.page, "重登失败，请检查网络", False)
-
     async def do_logout(self, e=None):
         await self.client.close()
         if self.auto_refresh_task and not self.auto_refresh_task.done():
@@ -2828,6 +3038,15 @@ class MU5001:
         self.page.update()
 
     def on_page_resize(self, e=None):
+        if getattr(self, '_resize_task', None):
+            self._resize_task.cancel()
+        self._resize_task = asyncio.create_task(self._debounced_resize(e))
+
+    async def _debounced_resize(self, e=None):
+        try:
+            await asyncio.sleep(0.15)
+        except asyncio.CancelledError:
+            return
         if self.page.width <= 0: 
             return
 
@@ -2843,6 +3062,19 @@ class MU5001:
         self.status_card.is_small = is_small
         if hasattr(self, 'status_card'):
             self.status_card.update_size(is_small, is_ultra_small)
+            
+        # 断网界面的自适应缩放
+        if hasattr(self, 'disconnect_icon'):
+            # 图标：超小屏30，小屏70，大屏90
+            self.disconnect_icon.size = 30 if is_ultra_small else (70 if is_small else 90)
+        if hasattr(self, 'disconnect_text'):
+            # 标题：超小屏11号，小屏16号，大屏18号
+            self.disconnect_text.size = 11 if is_ultra_small else (16 if is_small else 18)
+        if hasattr(self, 'disconnect_btn'):
+            # 按钮高度和字号同步缩小
+            self.disconnect_btn.height = 36 if is_ultra_small else (42 if is_small else 48)
+            if self.disconnect_btn.style and getattr(self.disconnect_btn.style, "text_style", None):
+                self.disconnect_btn.style.text_style.size = 11 if is_ultra_small else (13 if is_small else 14)
         
         if hasattr(self, 'login_view'):
             self.login_view.update_size(is_small)
@@ -2888,7 +3120,7 @@ class MU5001:
                 
                 if is_small:
                     # 小屏“绝对均分”：开启 expand = True
-                    # 强迫这一行的所有按钮宽度 100% 一模一样！彻底解决图标胖瘦不一导致的中心错位
+                    # 强迫这一行的所有按钮宽度 100% 一模一样！彻底解决图标中心错位
                     btn.width = None
                     btn.expand = True
                 else:
@@ -2927,6 +3159,7 @@ class MU5001:
             
         # 释放 HTTP 客户端底层的连接池资源
         await self.client.close()
+
 # ==========================================
 # 应用运行入口
 # ==========================================

@@ -1073,12 +1073,16 @@ class StatusCard(ft.Container):
             self.update()
 
     def _update_field(self, ctrl: ft.Text, new_val: str) -> bool:
-        ctrl_id = id(ctrl)
-        if self._last_data_hash.get(ctrl_id) != new_val:
-            ctrl.value = new_val
-            self._last_data_hash[ctrl_id] = new_val
-            return True
-        return False
+     ctrl_id = id(ctrl)
+     if self._last_data_hash.get(ctrl_id) != new_val:
+         ctrl.value = new_val
+         self._last_data_hash[ctrl_id] = new_val
+         try:
+             ctrl.update()  # 局部刷新
+         except Exception:
+             pass
+         return True
+     return False
 
     def update_realtime(self, status: 'RealtimeStatus'):
         sep = " "
@@ -1308,8 +1312,11 @@ class RebootCard(ft.Container):
         self.update()
 
     def update_time_display(self):
-        self.txt_local_time.value = f"设备当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
-        self.update()
+     self.txt_local_time.value = f"设备当前时间: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}"
+     try:
+         self.txt_local_time.update()  # 局部刷新
+     except Exception:
+         pass
 
     def update_config(self, res: dict):
         self.reboot_enable.value = res.get("reboot_schedule_enable", "0") == "1"
@@ -1954,12 +1961,12 @@ class SettingsCard(ft.Container):
 
         # 只在状态明确连上或断开时，且用户没有在手动切换时更新，防止正在连接中(connecting)发生界面跳动
         if not self.is_switching_data:
-            if is_connected and not self.data_switch.value:
-                self.data_switch.value = True
-                self.update()
-            elif is_disconnected and self.data_switch.value:
-                self.data_switch.value = False
-                self.update()
+         if is_connected and not self.data_switch.value:
+             self.data_switch.value = True
+             self.data_switch.update()  # 局部刷新：只更新小开关动画
+         elif is_disconnected and self.data_switch.value:
+             self.data_switch.value = False
+             self.data_switch.update()  # 局部刷新：只更新小开关动画
     
     # 按钮锁死助手函数
     def _toggle_network_lock(self, disabled: bool):
@@ -2374,6 +2381,750 @@ class DeviceListCard(ft.Container):
             pass
 
 # ==========================================
+# UI 组件拆分 - APN 设置卡片
+# ==========================================
+class APNCard(ft.Container):
+    def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
+        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
+        self.app_page = page
+        self.api_client = client
+        self.set_global_status = set_global_status_cb
+        self.is_data_connected = True
+        self.is_switching_data = False
+        self.is_adding_profile = False
+        self.auto_data = {"name": "", "apn": "", "pdp": "IPv4v6", "auth": "NONE", "user": "", "pwd": ""}
+        self.manual_profiles: List[Dict[str, str]] = []
+        self.selected_profile_name = ""
+        self.current_apn_name = ""
+        self.build_ui()
+
+    def build_ui(self):
+        self.txt_title = ft.Text("APN 设置", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
+        self.txt_current_apn = ft.Text("--", color=ft.Colors.ON_SURFACE)
+        self.data_switch = ft.Switch(
+            value=True,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_data_switch_change
+        )
+
+        self.radio_mode = ft.RadioGroup(
+            value="auto",
+            content=ft.Row([
+                ft.Radio(value="auto", label="自动", fill_color=ft.Colors.PRIMARY, label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE)),
+                ft.Radio(value="manual", label="手动", fill_color=ft.Colors.PRIMARY, label_style=ft.TextStyle(color=ft.Colors.ON_SURFACE))
+            ], wrap=True),
+            on_change=self.on_mode_change
+        )
+
+        self.dropdown_profile = create_dropdown("", [], None, expand=True)
+        self.dropdown_profile.on_change = self.on_profile_change
+        self.btn_add_profile = create_button("新增", on_click=self.on_add_profile)
+        
+        self.dropdown_pdp_type = create_dropdown("", [ft.dropdown.Option("IPv4"), ft.dropdown.Option("IPv6"), ft.dropdown.Option("IPv4v6")], "IPv4v6", expand=True)
+        self.input_profile_name = create_text_field(label="", expand=True)
+        self.input_apn = create_text_field(label="", expand=True)
+        self.dropdown_auth = create_dropdown("", [ft.dropdown.Option("NONE"), ft.dropdown.Option("CHAP"), ft.dropdown.Option("PAP")], "NONE", expand=True)
+        self.input_user = create_text_field(label="", expand=True)
+        self.input_pwd = create_text_field(label="", expand=True)
+        self.txt_warning = ft.Text("该设置只能在断网的条件下修改", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+
+
+        self.btn_set_default = create_button("默认APN", on_click=self.on_set_default, expand=True)
+        self.btn_apply = create_button("保存APN", on_click=self.on_apply, expand=True)
+        self.btn_delete = create_button("删除APN", on_click=self.on_delete, expand=True)
+
+        # 提取 Container 为实例变量，方便后续动态修改栅格宽度和可见性
+        self.cont_set_default = ft.Container(self.btn_set_default, col={"xs": 12, "sm": 4})
+        self.cont_apply = ft.Container(self.btn_apply, col={"xs": 12, "sm": 4}, visible=False)
+        self.cont_delete = ft.Container(self.btn_delete, col={"xs": 12, "sm": 4}, visible=False)
+
+        self.action_row = ft.ResponsiveRow(
+            [
+                self.cont_set_default,
+                self.cont_apply,
+                self.cont_delete,
+            ],
+            alignment=ft.MainAxisAlignment.END,
+            spacing=10,
+            run_spacing=8
+        )
+
+        def create_row(label, ctrl, extra=None):
+            cols = [ft.Container(ft.Text(label, color=ft.Colors.ON_SURFACE), col={"xs": 12, "sm": 4, "md": 3})]
+            if extra:
+                ctrl.expand = False
+                cols.append(ft.Container(ctrl, col={"xs": 12, "sm": 6, "md": 7}))
+                cols.append(ft.Container(extra, col={"xs": 12, "sm": 2, "md": 2}))
+            else:
+                cols.append(ft.Container(ctrl, col={"xs": 12, "sm": 8, "md": 9}))
+            return ft.ResponsiveRow(controls=cols, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        self.content = ft.Column([
+            self.txt_title,
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+            ft.ResponsiveRow([
+                ft.Container(ft.Text("当前 APN", color=ft.Colors.ON_SURFACE), col={"xs": 12, "sm": 4, "md": 3}),
+                ft.Container(self.txt_current_apn, col={"xs": 12, "sm": 8, "md": 9})
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.ResponsiveRow([
+                ft.Container(ft.Text("数据连接", color=ft.Colors.ON_SURFACE), col={"xs": 12, "sm": 4, "md": 3}),
+                ft.Container(
+                # 只保留 self.data_switch
+                    ft.Row([self.data_switch], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+                    col={"xs": 12, "sm": 8, "md": 9}
+                )
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            create_row("模式", ft.ResponsiveRow([ft.Container(self.radio_mode, col={"xs": 12, "sm": 6}), ft.Container(self.btn_add_profile, col={"xs": 12, "sm": 6})], vertical_alignment=ft.CrossAxisAlignment.CENTER)),
+            create_row("配置文件", self.dropdown_profile),
+            create_row("PDP 类型", self.dropdown_pdp_type),
+            create_row("配置文件名称 *", self.input_profile_name),
+            create_row("APN *", self.input_apn),
+            create_row("鉴权方式", self.dropdown_auth),
+            create_row("用户名", self.input_user),
+            create_row("密码", self.input_pwd),
+            ft.Container(self.txt_warning, margin=ft.Margin(left=0, top=10, right=0, bottom=0)),
+            self.action_row
+        ], spacing=12, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+
+    def on_mode_change(self, e):
+        is_manual = self.radio_mode.value == "manual"
+        
+        self.btn_add_profile.visible = is_manual
+
+        if is_manual:
+            self._refresh_profile_dropdown()
+            if self.is_adding_profile:
+                data = self._empty_profile(pdp="IPv4")
+            elif self.selected_profile_name:
+                data = self._find_manual_profile(self.selected_profile_name) or self._empty_profile()
+            elif self.manual_profiles:
+                data = self.manual_profiles[0]
+                self.selected_profile_name = data.get("name", "")
+                self._refresh_profile_dropdown()
+            else:
+                data = self._empty_profile()
+        else:
+            self.is_adding_profile = False
+            data = getattr(self, "auto_data", {})
+            auto_name = str(data.get("name", "") or "").strip()
+            if auto_name:
+                self.dropdown_profile.options = [ft.dropdown.Option(auto_name, auto_name)]
+                self.dropdown_profile.value = auto_name
+            else:
+                self.dropdown_profile.options = []
+                self.dropdown_profile.value = None
+
+        self._fill_profile_form(data)
+
+        self._sync_apn_editable_controls()
+
+        self.btn_apply.visible = is_manual
+        self.btn_delete.visible = is_manual
+        self.btn_set_default.visible = True
+        
+        # 动态控制外层 Container 的可见性与栅格宽度
+        self.cont_apply.visible = is_manual
+        self.cont_delete.visible = is_manual
+        
+        if is_manual:
+            self.cont_set_default.col = {"xs": 12, "sm": 4}
+            self.cont_apply.col = {"xs": 12, "sm": 4}
+            self.cont_delete.col = {"xs": 12, "sm": 4}
+        else:
+            self.cont_set_default.col = {"xs": 12}
+        self._sync_data_ui()
+
+        self.update()
+
+    def _empty_profile(self, pdp: str = "IPv4v6") -> Dict[str, str]:
+        return {"name": "", "apn": "", "pdp": pdp, "auth": "NONE", "user": "", "pwd": "", "index": str(len(self.manual_profiles))}
+
+    def _find_manual_profile(self, name: str) -> Optional[Dict[str, str]]:
+        for profile in self.manual_profiles:
+            if profile.get("name") == name:
+                return profile
+        return None
+
+    def _load_manual_profile_form(self, name: str) -> bool:
+        name = str(name or "").strip()
+        self.selected_profile_name = name
+        self.dropdown_profile.value = name or None
+        profile = self._find_manual_profile(name)
+        if profile:
+            self._fill_profile_form(profile)
+            return True
+        logger.warning(f"未找到 APN 配置文件: {name}")
+        self._fill_profile_form(self._empty_profile())
+        return False
+
+    def _refresh_profile_dropdown(self):
+        self.dropdown_profile.options = [ft.dropdown.Option(p["name"], p["name"]) for p in self.manual_profiles if p.get("name")]
+        names = [p.get("name") for p in self.manual_profiles]
+        if self.is_adding_profile:
+            self.dropdown_profile.value = None
+        elif self.selected_profile_name in names:
+            self.dropdown_profile.value = self.selected_profile_name
+        else:
+            self.selected_profile_name = names[0] if names else ""
+            self.dropdown_profile.value = self.selected_profile_name or None
+
+    def _match_option(self, dropdown, value: str, fallback: str) -> str:
+        value_upper = self._ui_pdp_type(value).upper() if dropdown is self.dropdown_pdp_type else str(value or "").upper()
+        for opt in dropdown.options:
+            if str(opt.key).upper() == value_upper:
+                return opt.key
+        return fallback
+
+    def _ui_pdp_type(self, value: str) -> str:
+        val = str(value or "").strip()
+        return "IPv4" if val.upper() == "IP" else val
+
+    def _api_pdp_type(self, value: str) -> str:
+        val = str(value or "").strip()
+        return "IP" if val.upper() == "IPV4" else val
+
+    def _fill_profile_form(self, data: Dict[str, str]):
+        self.input_profile_name.value = data.get("name", "")
+        self.input_apn.value = data.get("apn", "")
+        self.input_user.value = data.get("user", "")
+        self.input_pwd.value = data.get("pwd", "")
+        self.dropdown_pdp_type.value = self._match_option(self.dropdown_pdp_type, data.get("pdp", ""), "IPv4v6")
+        self.dropdown_auth.value = self._match_option(self.dropdown_auth, data.get("auth", ""), "NONE")
+
+    def _parse_auto_profile(self, res: dict) -> Dict[str, str]:
+        data = {"name": "", "apn": "", "pdp": "IPv4v6", "auth": "NONE", "user": "", "pwd": ""}
+        auto_cfg = str(res.get("apn_auto_config", "") or res.get("ipv6_apn_auto_config", "") or "").strip()
+        if auto_cfg:
+            parts = auto_cfg.split("($)")
+            if len(parts) > 0:
+                data["name"] = parts[0].strip()
+            if len(parts) > 1:
+                data["apn"] = parts[1].strip()
+            if len(parts) > 4 and parts[4].strip():
+                data["auth"] = parts[4].strip()
+            if len(parts) > 5:
+                data["user"] = parts[5].strip()
+            if len(parts) > 6:
+                data["pwd"] = parts[6].strip()
+            if len(parts) > 7 and parts[7].strip():
+                data["pdp"] = self._ui_pdp_type(parts[7].strip())
+
+        if not data["name"] and not data["apn"]:
+            data.update({
+                "name": str(res.get("profile_name_ui", "")).strip(),
+                "apn": str(res.get("wan_apn_ui", "")).strip(),
+                "pdp": self._ui_pdp_type(str(res.get("pdp_type_ui", "IPv4v6")).strip()),
+                "auth": str(res.get("ppp_auth_mode_ui", "NONE")).strip() or "NONE",
+                "user": str(res.get("ppp_username_ui", "")).strip(),
+                "pwd": str(res.get("ppp_passwd_ui", "")).strip()
+            })
+        return data
+
+    def _sync_data_ui(self):
+        self.data_switch.value = self.is_data_connected
+        self.btn_set_default.visible = True
+        self.btn_set_default.disabled = self.is_switching_data
+        self.btn_add_profile.disabled = self.is_switching_data
+        self.btn_apply.disabled = self.is_switching_data
+        self.btn_delete.disabled = self.is_switching_data
+        self._sync_apn_editable_controls()
+
+    def _sync_apn_editable_controls(self):
+        is_manual = getattr(self, "radio_mode", None) and self.radio_mode.value == "manual"
+        can_edit = bool(is_manual and not self.is_data_connected and not self.is_switching_data)
+        self.dropdown_profile.disabled = not can_edit or self.is_adding_profile
+        for ctrl in [self.dropdown_profile, self.dropdown_pdp_type,
+                     self.input_profile_name, self.input_apn, self.dropdown_auth,
+                     self.input_user, self.input_pwd]:
+            ctrl.disabled = not can_edit
+        self.dropdown_profile.disabled = not can_edit or self.is_adding_profile
+
+    def update_realtime(self, status: 'RealtimeStatus'):
+        if self.is_switching_data:
+            return
+        self.is_data_connected = bool(getattr(status, "is_data_connected", False))
+        self._sync_data_ui()
+        if self.radio_mode.value == "manual" and not self.is_adding_profile:
+            selected = str(self.dropdown_profile.value or "").strip()
+            loaded = str(self.input_profile_name.value or "").strip()
+            if selected and selected != loaded:
+                self._load_manual_profile_form(selected)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def on_profile_change(self, e):
+        if self.radio_mode.value != "manual" or self.is_adding_profile:
+            return
+        selected = getattr(e, "data", None) or getattr(getattr(e, "control", None), "value", None) or self.dropdown_profile.value or ""
+        self._load_manual_profile_form(selected)
+        self.btn_delete.visible = True
+        self.update()
+
+    def _set_apn_actions_locked(self, disabled: bool):
+        self.data_switch.disabled = disabled
+        if disabled:
+            self._sync_apn_editable_controls()
+            for btn in [self.btn_set_default, self.btn_apply, self.btn_delete, self.btn_add_profile]:
+                btn.disabled = True
+        else:
+            self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _ensure_data_disconnected(self) -> bool:
+        if self.is_data_connected:
+            show_toast(self.app_page, "请先关闭数据连接后再修改 APN", False)
+            return False
+        return True
+
+    async def _switch_data_connection(self, target_on: bool, reason: str = "") -> bool:
+        if self.is_data_connected == target_on:
+            return True
+        self.is_switching_data = True
+        self._set_apn_actions_locked(True)
+        action = "开启" if target_on else "关闭"
+        show_toast(self.app_page, f"正在{action}数据连接...", True)
+        try:
+            cmd = "CONNECT_NETWORK" if target_on else "DISCONNECT_NETWORK"
+            ok = await self.api_client.post_cmd(cmd, {"notCallback": "true"})
+            if ok:
+                self.is_data_connected = target_on
+                self.set_global_status(f"数据连接已{action}" + (f"，{reason}" if reason else ""), ft.Colors.PRIMARY)
+                show_toast(self.app_page, f"数据连接已{action}", True)
+            else:
+                self.set_global_status(f"数据连接{action}失败", ft.Colors.ERROR)
+                show_toast(self.app_page, f"数据连接{action}失败", False)
+            return ok
+        except Exception as ex:
+            logger.error(f"APN 页面数据连接{action}异常: {ex}", exc_info=DEBUG_MODE)
+            self.set_global_status(f"数据连接{action}异常", ft.Colors.ERROR)
+            show_toast(self.app_page, f"数据连接{action}异常", False)
+            return False
+        finally:
+            self._sync_data_ui()
+            await asyncio.sleep(1)
+            self.is_switching_data = False
+            self._set_apn_actions_locked(False)
+
+    async def on_data_switch_change(self, e):
+        if self.is_switching_data:
+            self.data_switch.value = self.is_data_connected
+            self.data_switch.update()
+            return
+
+        target_on = bool(self.data_switch.value)
+        self.is_switching_data = True
+        self._set_apn_actions_locked(True)
+        show_toast(self.app_page, f"正在{'开启' if target_on else '关闭'}数据连接...", True)
+        try:
+            cmd = "CONNECT_NETWORK" if target_on else "DISCONNECT_NETWORK"
+            ok = await self.api_client.post_cmd(cmd, {"notCallback": "true"})
+            if ok:
+                self.is_data_connected = target_on
+                self.set_global_status(f"数据连接已{'开启' if target_on else '关闭'}", ft.Colors.PRIMARY)
+                show_toast(self.app_page, f"数据连接已{'开启' if target_on else '关闭'}", True)
+            else:
+                self.data_switch.value = self.is_data_connected
+                self.set_global_status("数据连接切换失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "数据连接切换失败", False)
+        except Exception as ex:
+            logger.error(f"APN 页面数据连接切换异常: {ex}", exc_info=DEBUG_MODE)
+            self.data_switch.value = self.is_data_connected
+            self.set_global_status("数据连接切换异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "数据连接切换异常", False)
+        finally:
+            self._sync_data_ui()
+            await asyncio.sleep(1)
+            self.is_switching_data = False
+            self._set_apn_actions_locked(False)
+
+    def update_config(self, res: dict):
+        self.mode = res.get("apn_mode", "auto")
+        self.radio_mode.value = self.mode
+
+        # 解析并缓存【自动模式】的数据
+        ui_name = str(res.get("profile_name_ui", "")).strip()
+        self.current_apn_name = ui_name or self.current_apn_name
+        self.auto_data = self._parse_auto_profile(res)
+
+        # 解析并缓存【手动模式】的配置文件列表
+        self.manual_profiles = self._parse_manual_profiles(res)
+        if self.selected_profile_name not in [p.get("name") for p in self.manual_profiles]:
+            self.selected_profile_name = self.manual_profiles[0].get("name", "") if self.manual_profiles else ""
+
+        # 更新顶部的“当前 APN”文本
+        current_display = self.current_apn_name if self.mode == "manual" else self.auto_data["name"]
+        self.txt_current_apn.value = current_display or "--"
+
+        # 触发 UI 渲染
+        self.on_mode_change(None)
+
+    def _split_profile_field(self, value: str) -> List[str]:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        for sep in ["($)", ";", ","]:
+            if sep in text:
+                return [part.strip() for part in text.split(sep)]
+        return [text]
+
+    def _parse_manual_profiles(self, res: dict) -> List[Dict[str, str]]:
+        config_profiles = self._parse_apn_config_profiles(res)
+        if config_profiles:
+            return self._filter_auto_profile(config_profiles)
+
+        names = self._split_profile_field(
+            res.get("profile_name_list", "") or res.get("apn_profile_name", "") or
+            res.get("m_profile_name", "")
+        )
+        apns = self._split_profile_field(
+            res.get("wan_apn_list", "") or res.get("m_wan_apn", "")
+        )
+        pdps = self._split_profile_field(
+            res.get("pdp_type_list", "") or res.get("m_pdp_type", "")
+        )
+        auths = self._split_profile_field(
+            res.get("ppp_auth_mode_list", "") or res.get("m_ppp_auth_mode", "")
+        )
+        users = self._split_profile_field(res.get("m_ppp_username", "") or res.get("ppp_username", ""))
+        pwds = self._split_profile_field(res.get("m_ppp_passwd", "") or res.get("ppp_passwd", ""))
+
+        count = max(len(names), len(apns), len(pdps), len(auths), len(users), len(pwds), 0)
+        profiles = []
+        seen = set()
+        for i in range(count):
+            name = names[i] if i < len(names) else ""
+            apn = apns[i] if i < len(apns) else ""
+            if not name and not apn:
+                continue
+            name = name or apn
+            if name in seen:
+                continue
+            seen.add(name)
+            profiles.append({
+                "name": name,
+                "apn": apn,
+                "pdp": self._ui_pdp_type(pdps[i]) if i < len(pdps) and pdps[i] else "IPv4v6",
+                "auth": auths[i] if i < len(auths) and auths[i] else "NONE",
+                "user": users[i] if i < len(users) else "",
+                "pwd": pwds[i] if i < len(pwds) else "",
+                "index": str(i)
+            })
+        return self._filter_auto_profile(profiles)
+
+    def _filter_auto_profile(self, profiles: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        auto_name = str(self.auto_data.get("name", "")).strip()
+        auto_apn = str(self.auto_data.get("apn", "")).strip()
+        filtered = []
+        for profile in profiles:
+            name = str(profile.get("name", "")).strip()
+            apn = str(profile.get("apn", "")).strip()
+            if auto_name and auto_apn and name == auto_name and apn == auto_apn:
+                continue
+            filtered.append(profile)
+        return filtered
+
+    def _parse_apn_config_profiles(self, res: dict) -> List[Dict[str, str]]:
+        profiles = []
+        seen = set()
+        for i in range(20):
+            raw = str(res.get(f"APN_config{i}", "") or "").strip()
+            if not raw:
+                continue
+            parts = raw.split("($)")
+            name = parts[0].strip() if len(parts) > 0 else ""
+            apn = parts[1].strip() if len(parts) > 1 else ""
+            if not name and not apn:
+                continue
+            name = name or apn
+            if name in seen:
+                continue
+            seen.add(name)
+            profiles.append({
+                "name": name,
+                "apn": apn,
+                "pdp": self._ui_pdp_type(parts[7].strip()) if len(parts) > 7 and parts[7].strip() else "IPv4v6",
+                "auth": parts[4].strip() if len(parts) > 4 and parts[4].strip() else "NONE",
+                "user": parts[5].strip() if len(parts) > 5 else "",
+                "pwd": parts[6].strip() if len(parts) > 6 else "",
+                "index": str(i)
+            })
+        return profiles
+
+    def _merge_manual_profiles(self, current: List[Dict[str, str]], incoming: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        merged = []
+        by_name = {}
+        for profile in list(current or []) + list(incoming or []):
+            name = str(profile.get("name", "")).strip()
+            if not name:
+                continue
+            if name in by_name:
+                by_name[name].update({k: v for k, v in profile.items() if v not in (None, "")})
+            else:
+                by_name[name] = dict(profile)
+                merged.append(by_name[name])
+        for i, profile in enumerate(merged):
+            profile["index"] = str(profile.get("index", i))
+        return merged
+
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        self.txt_title.size = 13 if is_ultra_small else (16 if is_small else 18)
+        label_size = 10 if is_ultra_small else (12 if is_small else 14)
+        text_size = 11 if is_ultra_small else (13 if is_small else 15)
+
+        self.txt_current_apn.size = text_size
+        self.txt_warning.size = 10 if is_ultra_small else 12
+
+        pad = ft.Padding(left=6, top=6, right=6, bottom=6) if is_ultra_small else (ft.Padding(left=10, top=8, right=10, bottom=8) if is_small else ft.Padding(left=12, top=10, right=12, bottom=10))
+
+        for ctrl in [self.dropdown_profile, self.dropdown_pdp_type, self.dropdown_auth, self.input_profile_name, self.input_apn, self.input_user, self.input_pwd]:
+            if hasattr(ctrl, "text_size"):
+                ctrl.text_size = text_size
+            if hasattr(ctrl, "content_padding"):
+                ctrl.content_padding = pad
+
+        button_height = 36 if is_ultra_small else 42
+        button_text_size = 11 if is_ultra_small else (13 if is_small else 14)
+        for btn in [self.btn_add_profile, self.btn_set_default, self.btn_apply, self.btn_delete]:
+            btn.height = 32 if btn == self.btn_add_profile else button_height
+            if btn == self.btn_add_profile:
+                btn.width = 80
+            else:
+                btn.width = None  # 彻底解除宽度限制，自适应三等分生效
+            if btn.style and btn.style.text_style:
+                btn.style.text_style.size = button_text_size
+        if is_ultra_small:
+            self.action_row.alignment = ft.MainAxisAlignment.START
+            self.action_row.spacing = 8
+            self.action_row.run_spacing = 8
+        else:
+            self.action_row.alignment = ft.MainAxisAlignment.END
+            self.action_row.spacing = 10
+            self.action_row.run_spacing = 8
+
+        self.padding = 8 if is_ultra_small else (12 if is_small else 15)
+        self.border_radius = 8 if is_ultra_small else (10 if is_small else 12)
+        self.content.spacing = 8 if is_ultra_small else (10 if is_small else 12)
+
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    async def on_add_profile(self, e):
+        if self.is_data_connected and not await self._switch_data_connection(False, "可修改 APN"):
+            return
+
+        self.is_adding_profile = not self.is_adding_profile
+        if self.is_adding_profile:
+            self.selected_profile_name = ""
+            self.dropdown_profile.value = None
+            self._fill_profile_form(self._empty_profile(pdp="IPv4"))
+        else:
+            profile = self._find_manual_profile(self.selected_profile_name)
+            self._fill_profile_form(profile or self._empty_profile())
+
+        self.on_mode_change(None)
+        self.update()
+
+    async def on_set_default(self, e):
+        was_connected = self.is_data_connected
+        if was_connected and not await self._switch_data_connection(False, "准备设置 APN"):
+            return
+        if self.radio_mode.value == "manual" and not self._validate_manual_profile():
+            if was_connected:
+                await self._switch_data_connection(True, "APN 未修改")
+            return
+
+        show_toast(self.app_page, "正在设置默认 APN...", True)
+        try:
+            if self.radio_mode.value == "auto":
+                ok = await self.api_client.post_cmd("APN_PROC_EX", {"apn_mode": "auto"})
+            elif self.is_adding_profile:
+                ok = await self.api_client.post_cmd("APN_PROC_EX", self._build_manual_payload())
+            else:
+                ok = await self.api_client.post_cmd("APN_PROC_EX", self._build_set_default_payload())
+        except Exception as ex:
+            logger.error(f"APN 设为默认异常: {ex}", exc_info=DEBUG_MODE)
+            ok = False
+
+        if ok:
+            if self.radio_mode.value == "manual":
+                self._upsert_current_profile()
+                self.is_adding_profile = False
+                self._refresh_profile_dropdown()
+                self.current_apn_name = self.selected_profile_name
+                self.txt_current_apn.value = self.current_apn_name or "--"
+            self.set_global_status("APN 默认设置已应用", ft.Colors.PRIMARY)
+            show_toast(self.app_page, "APN 默认设置成功", True)
+            await asyncio.sleep(1)
+            await self._switch_data_connection(True, "APN 已生效")
+        else:
+            self.set_global_status("APN 设置失败", ft.Colors.ERROR)
+            show_toast(self.app_page, "APN 设置失败", False)
+            await self._switch_data_connection(True, "APN 设置失败，已恢复数据连接")
+        self.on_mode_change(None)
+        self.update()
+
+    async def on_apply(self, e):
+        if not self._validate_manual_profile():
+            return
+
+        was_connected = self.is_data_connected
+        if was_connected and not await self._switch_data_connection(False, "准备保存 APN"):
+            return
+
+        show_toast(self.app_page, "正在保存 APN 设置...", True)
+        try:
+            ok = await self.api_client.post_cmd("APN_PROC_EX", self._build_manual_payload())
+        except Exception as ex:
+            logger.error(f"APN 应用异常: {ex}", exc_info=DEBUG_MODE)
+            ok = False
+        if ok:
+            self._upsert_current_profile()
+            self.is_adding_profile = False
+            self._refresh_profile_dropdown()
+            self.current_apn_name = self.selected_profile_name
+            self.txt_current_apn.value = self.current_apn_name or "--"
+            self.set_global_status("APN 已保存", ft.Colors.PRIMARY)
+            show_toast(self.app_page, "APN 保存成功", True)
+            await asyncio.sleep(1)
+            await self._switch_data_connection(True, "APN 已生效")
+        else:
+            self.set_global_status("APN 保存失败", ft.Colors.ERROR)
+            show_toast(self.app_page, "APN 保存失败", False)
+            await self._switch_data_connection(True, "APN 保存失败，已恢复数据连接")
+        self.on_mode_change(None)
+        self.update()
+
+    async def on_delete(self, e):
+        if self.is_adding_profile:
+            self.is_adding_profile = False
+            self.selected_profile_name = self.manual_profiles[0].get("name", "") if self.manual_profiles else ""
+            self._refresh_profile_dropdown()
+            self._fill_profile_form(self._empty_profile(pdp="IPv4"))
+            self.on_mode_change(None)
+            self.update()
+            return
+        if not self.selected_profile_name:
+            show_toast(self.app_page, "请选择要删除的 APN 配置", False)
+            return
+
+        was_connected = self.is_data_connected
+        if was_connected and not await self._switch_data_connection(False, "准备删除 APN"):
+            return
+
+        show_toast(self.app_page, "正在删除 APN 设置...", True)
+        profile = self._find_manual_profile(self.selected_profile_name) or {}
+        try:
+            ok = await self.api_client.post_cmd("APN_PROC_EX", {
+                "apn_action": "delete",
+                "apn_mode": "manual",
+                "index": str(profile.get("index", "0"))
+            })
+        except Exception as ex:
+            logger.error(f"APN 删除异常: {ex}", exc_info=DEBUG_MODE)
+            ok = False
+        if ok:
+            deleted_name = self.selected_profile_name
+            self.manual_profiles = [p for p in self.manual_profiles if p.get("name") != self.selected_profile_name]
+            self.selected_profile_name = self.manual_profiles[0].get("name", "") if self.manual_profiles else ""
+            if self.current_apn_name == deleted_name:
+                self.current_apn_name = self.selected_profile_name
+            self._refresh_profile_dropdown()
+            if not self.manual_profiles:
+                self._fill_profile_form(self._empty_profile())
+            self.set_global_status("APN 已删除", ft.Colors.PRIMARY)
+            show_toast(self.app_page, "APN 删除成功", True)
+            await asyncio.sleep(1)
+            await self._switch_data_connection(True, "APN 已删除")
+        else:
+            self.set_global_status("APN 删除失败", ft.Colors.ERROR)
+            show_toast(self.app_page, "APN 删除失败", False)
+            await self._switch_data_connection(True, "APN 删除失败，已恢复数据连接")
+        self.on_mode_change(None)
+        self.update()
+
+    def _current_form_profile(self) -> Dict[str, str]:
+        return {
+            "name": str(self.input_profile_name.value or "").strip(),
+            "apn": str(self.input_apn.value or "").strip(),
+            "pdp": self.dropdown_pdp_type.value or "IPv4v6",
+            "auth": self.dropdown_auth.value or "NONE",
+            "user": str(self.input_user.value or "").strip(),
+            "pwd": str(self.input_pwd.value or "").strip(),
+            "index": str(len(self.manual_profiles) if self.is_adding_profile else (self._find_manual_profile(self.selected_profile_name) or {}).get("index", len(self.manual_profiles)))
+        }
+
+    def _validate_manual_profile(self) -> bool:
+        profile = self._current_form_profile()
+        if not profile["name"]:
+            show_toast(self.app_page, "请输入配置文件名称", False)
+            return False
+        if not profile["apn"]:
+            show_toast(self.app_page, "请输入 APN", False)
+            return False
+        return True
+
+    def _upsert_current_profile(self):
+        profile = self._current_form_profile()
+        replaced = False
+        for i, item in enumerate(self.manual_profiles):
+            same_name = item.get("name") == profile["name"]
+            editing_selected = (not self.is_adding_profile and item.get("name") == self.selected_profile_name)
+            if same_name or editing_selected:
+                self.manual_profiles[i] = profile
+                replaced = True
+                break
+        if not replaced:
+            self.manual_profiles.append(profile)
+        self.selected_profile_name = profile["name"]
+
+    def _build_manual_payload(self):
+        profile = self._current_form_profile()
+        return {
+            "apn_action": "save",
+            "apn_mode": "manual",
+            "profile_name": profile["name"],
+            "wan_dial": "*99#",
+            "apn_select": "manual",
+            "pdp_type": self._api_pdp_type(profile["pdp"]),
+            "pdp_select": "auto",
+            "pdp_addr": "",
+            "index": profile["index"],
+            "wan_apn": profile["apn"],
+            "ppp_auth_mode": profile["auth"].lower(),
+            "ppp_username": profile["user"],
+            "ppp_passwd": profile["pwd"],
+            "dns_mode": "auto",
+            "prefer_dns_manual": "",
+            "standby_dns_manual": "",
+            # 补充的 IPv6 必填参数，防止路由器存入空壳
+            "ipv6_wan_apn": profile["apn"],
+            "ipv6_ppp_auth_mode": profile["auth"].lower(),
+            "ipv6_ppp_username": profile["user"],
+            "ipv6_ppp_passwd": profile["pwd"],
+            "ipv6_dns_mode": "auto",
+            "ipv6_prefer_dns_manual": "",
+            "ipv6_standby_dns_manual": ""
+        }
+    def _build_set_default_payload(self):
+        profile = self._current_form_profile()
+        return {
+            "apn_mode": "manual",
+            "apn_action": "set_default",
+            "set_default_flag": "1",
+            "pdp_type": self._api_pdp_type(profile["pdp"]),
+            "index": profile["index"]
+        }
+
+# ==========================================
 # 主程序：应用类封装
 # ==========================================
 class MU5001:
@@ -2464,6 +3215,7 @@ class MU5001:
         self.reboot_card = RebootCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
         self.settings_card = SettingsCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status, on_reboot_cb=self.on_reboot_device)
         self.device_list_card = DeviceListCard(self.page, on_block_device=self.on_block_device, on_unblock_device=self.on_unblock_device)
+        self.apn_card = APNCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
 
         # 构建主视图布局 (这一步会创建 self.theme_btn)
         self.build_main_view()
@@ -2491,9 +3243,11 @@ class MU5001:
             self.network_action_buttons.append(btn)
         return btn
 
-    def show_toolbox_menu(self, e):
+    def show_toolbox_menu(self, e=None):
         self.toolbox_menu.visible = True
         self.toolbox_content.visible = False
+        if hasattr(self, 'apn_card'):
+            self.apn_card.visible = False
         self.view_toolbox.update()
 
     def show_wifi_settings(self, e):
@@ -2502,6 +3256,7 @@ class MU5001:
         # 显示WiFi，隐藏重启
         self.settings_card.wifi_section.visible = True
         self.reboot_card.visible = False
+        self.apn_card.visible = False
         self.view_toolbox.update()
 
     def show_reboot_settings(self, e):
@@ -2510,6 +3265,15 @@ class MU5001:
         # 隐藏WiFi，显示重启
         self.settings_card.wifi_section.visible = False
         self.reboot_card.visible = True
+        self.apn_card.visible = False
+        self.view_toolbox.update()
+
+    def show_apn_settings(self, e):
+        self.toolbox_menu.visible = False
+        self.toolbox_content.visible = True
+        self.settings_card.wifi_section.visible = False
+        self.reboot_card.visible = False
+        self.apn_card.visible = True
         self.view_toolbox.update()
 
     # 显示/隐藏断网界面的方法
@@ -2527,7 +3291,7 @@ class MU5001:
 
     def build_main_view(self):
         # 全新设计的顶部统一导航栏 (完美对齐、防遮挡、自适应)
-        self.current_nav_index = 0  # 记录当前所在的页面索引
+        self.current_nav_index = 0  # 记录当前所在的页面索引  
 
         def handle_nav_click(idx):
             self.current_nav_index = idx  # 每次切换时更新索引
@@ -2651,23 +3415,18 @@ class MU5001:
         self.toolbox_items = [
             ft.Container(self._create_tool_item(ft.Icons.WIFI, "WiFi 设置", self.show_wifi_settings), col={"xs": 12, "sm": 6}),
             ft.Container(self._create_tool_item(ft.Icons.RESTART_ALT, "定时重启", self.show_reboot_settings), col={"xs": 12, "sm": 6}),
+            ft.Container(self._create_tool_item(ft.Icons.CELL_TOWER, "APN 设置", self.show_apn_settings), col={"xs": 12, "sm": 6}),
         ]
         self.toolbox_menu = ft.ResponsiveRow(controls=self.toolbox_items, spacing=14, run_spacing=14)
         
         self.settings_card.wifi_section.visible = False
         self.reboot_card.visible = False
-        
-        # 独立出来的返回按钮（不参与滚动）
-        self.toolbox_back_btn = ft.Container(
-            content=ft.IconButton(ft.Icons.ARROW_BACK, on_click=self.show_toolbox_menu, icon_color=ft.Colors.ON_SURFACE),
-            visible=False,
-            padding=ft.Padding(0, 0, 0, 0)
-        )
+        self.apn_card.visible = False
 
-        # 移除了返回按钮的纯内容区
         self.toolbox_content = ft.Column([
             self.settings_card.wifi_section,
-            self.reboot_card
+            self.reboot_card,
+            self.apn_card
         ], visible=False)
 
         # 内部滚动容器
@@ -2676,7 +3435,7 @@ class MU5001:
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH, scroll=ft.ScrollMode.AUTO, expand=True
         )
 
-        # 最外层容器：固定返回键 + 滚动内容，外层自身禁止滚动
+        # 最外层容器：滚动内容，外层自身禁止滚动
         self.view_toolbox = ft.Column(
             [self.view_toolbox_scroll],
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH, expand=True, visible=False
@@ -2688,7 +3447,6 @@ class MU5001:
         )
 
         # 未连接路由器的提示界面
-        # 1. 提取出图标、文字和按钮，方便后续根据屏幕大小自动缩放
         self.disconnect_icon = ft.Icon(ft.Icons.ROUTER_OUTLINED, size=80, color=ft.Colors.PRIMARY)
         # 强制文字居中对齐，防止在极窄屏幕下换行时偏向左侧
         self.disconnect_text = ft.Text("未连接 WiFi", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, text_align=ft.TextAlign.CENTER)
@@ -2933,8 +3691,9 @@ class MU5001:
             self.status_card.update_realtime(status)
             self.device_list_card.update_realtime(status)
             
-            # 原本的 settings_card 只需要判断数据连接开关，这里做个兼容包装
+            # 原本的 settings_card 只需要判断数据连接开关，这里做个兼容包装    
             self.settings_card.update_realtime({"ppp_status": "connected" if status.is_data_connected else "disconnected"})
+            self.apn_card.update_realtime(status) # 将联网状态传给 APN 控制按钮显示
             return True
         except Exception as e:
             logger.debug(f"实时刷新异常: {e}")
@@ -2995,6 +3754,47 @@ class MU5001:
             except Exception as e:
                 logger.error(f"读取 WiFi 覆盖范围失败: {e}")
 
+            try:
+                # 请求多个字段必须带上 multi_data=True
+                # 精简为真正有用、路由器必然返回的核心字段，防止 URL 过长报错
+                apn_cmd = (
+                    "apn_interface_version,"
+                    "APN_config0,APN_config1,APN_config2,APN_config3,APN_config4,APN_config5,APN_config6,APN_config7,APN_config8,APN_config9,"
+                    "APN_config10,APN_config11,APN_config12,APN_config13,APN_config14,APN_config15,APN_config16,APN_config17,APN_config18,APN_config19,"
+                    "ipv6_APN_config0,ipv6_APN_config1,ipv6_APN_config2,ipv6_APN_config3,ipv6_APN_config4,ipv6_APN_config5,ipv6_APN_config6,ipv6_APN_config7,ipv6_APN_config8,ipv6_APN_config9,"
+                    "ipv6_APN_config10,ipv6_APN_config11,ipv6_APN_config12,ipv6_APN_config13,ipv6_APN_config14,ipv6_APN_config15,ipv6_APN_config16,ipv6_APN_config17,ipv6_APN_config18,ipv6_APN_config19,"
+                    "m_profile_name,profile_name,wan_dial,apn_select,pdp_type,pdp_select,pdp_addr,index,Current_index,apn_auto_config,ipv6_apn_auto_config,apn_mode,wan_apn,ppp_auth_mode,ppp_username,ppp_passwd,dns_mode,prefer_dns_manual,standby_dns_manual,"
+                    "ipv6_wan_apn,ipv6_pdp_type,ipv6_ppp_auth_mode,ipv6_ppp_username,ipv6_ppp_passwd,ipv6_dns_mode,ipv6_prefer_dns_manual,ipv6_standby_dns_manual,apn_num_preset,"
+                    "wan_apn_ui,profile_name_ui,pdp_type_ui,ppp_auth_mode_ui,ppp_username_ui,ppp_passwd_ui,dns_mode_ui,prefer_dns_manual_ui,standby_dns_manual_ui,"
+                    "ipv6_wan_apn_ui,ipv6_ppp_auth_mode_ui,ipv6_ppp_username_ui,ipv6_ppp_passwd_ui,ipv6_dns_mode_ui,ipv6_prefer_dns_manual_ui,ipv6_standby_dns_manual_ui"
+                )
+                apn_res = await self.client.get_cmd(apn_cmd, multi_data=True)
+                safe_apn_res = {
+                    k: ("***" if "passwd" in k.lower() else v)
+                    for k, v in apn_res.items()
+                    if v not in (None, "", [], {}) and k not in {"result"}
+                }
+                logger.info(f"APN 核心字段返回: {safe_apn_res}")
+                res.update(apn_res)
+                probe_cmd = (
+                    "apn_profile,apn_profile_list,apn_list,apn_config,apn_config_list,"
+                    "apn_setting,apn_settings,apn_profile_name,profile_name_list,"
+                    "wan_apn_list,pdp_type_list,ppp_auth_mode_list,manual_apn_list"
+                )
+                try:
+                    probe_res = await self.client.get_cmd(probe_cmd, multi_data=True)
+                    useful_probe = {
+                        k: v for k, v in probe_res.items()
+                        if v not in (None, "", [], {}) and k not in {"result"}
+                    }
+                    if useful_probe:
+                        logger.info(f"APN 探测字段返回: {useful_probe}")
+                        res.update(useful_probe)
+                except Exception as probe_ex:
+                    logger.debug(f"APN 探测字段请求失败: {probe_ex}")
+            except Exception as e:
+                logger.error(f"APN 数据请求失败: {e}")
+
             current_net_mode = str(net_res.get(API_KEY_READ, "")).strip().upper()
             
             self.reboot_card.update_config(res)
@@ -3004,6 +3804,7 @@ class MU5001:
                 nsa_res.get("nr5g_nsa_band_lock", ""), 
                 current_net_mode
             )
+            self.apn_card.update_config(res)
 
             dev_status = " | 开发者模式已解锁" if self.device_state.dev_unlocked else " | 开发者模式未解锁"
             self.status_card.set_global_status("数据读取成功" + dev_status, ft.Colors.PRIMARY if self.device_state.dev_unlocked else ft.Colors.ERROR)
@@ -3031,6 +3832,13 @@ class MU5001:
         self.login_view.visible = False
         self.main_view.visible = True
         self.page.update()
+        try:
+            await self.client.post_cmd("CONNECT_NETWORK", {"notCallback": "true"})
+            self.settings_card.data_switch.value = True
+            self.apn_card.is_data_connected = True
+            self.apn_card._sync_data_ui()
+        except Exception as conn_err:
+            logger.warning(f"登录成功，开启数据连接失败: {conn_err}")
         await self.refresh_all()
         self.start_auto_refresh()
 
@@ -3085,6 +3893,7 @@ class MU5001:
             logger.error(f"重新登录异常: {ex}", exc_info=DEBUG_MODE)
             self.status_card.set_global_status("重登失败，请检查网络", ft.Colors.ERROR)
             show_toast(self.page, "重登失败，请检查网络", False)
+            
     async def do_logout(self, e=None):
         await self.client.close()
         if self.auto_refresh_task and not self.auto_refresh_task.done():
@@ -3144,6 +3953,8 @@ class MU5001:
             self.reboot_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'device_list_card'):
             self.device_list_card.update_size(is_small, is_ultra_small)
+        if hasattr(self, 'apn_card'):
+            self.apn_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'toolbox_menu'):
             self.toolbox_menu.spacing = 6 if is_ultra_small else (10 if is_small else 14)
             self.toolbox_menu.run_spacing = 6 if is_ultra_small else (10 if is_small else 14)
@@ -3165,7 +3976,7 @@ class MU5001:
         # 核心排版：完全统一的自适应缩放与折行逻辑
         # ---------------------------------------------------------
         if hasattr(self, 'top_header_bar'):
-            # 适当放大字号和图标
+            # 适当放大字号和图标:
             icon_sz = 17 if is_ultra_small else (22 if is_small else 22)
             txt_sz = 9 if is_ultra_small else (11 if is_small else 12)
             

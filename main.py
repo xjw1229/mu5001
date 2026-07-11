@@ -285,8 +285,9 @@ class MU5001Client:
 
     # 异步 GET 查询设备配置，cmd 支持逗号分隔多命令，multi_data 启用多数据返回模式
     async def get_cmd(self, cmd: str, multi_data: bool = False) -> Dict:
-        # 移除互斥锁，允许 GET 请求高并发，不再排队等待，大幅提升刷新丝滑度
-        return await self._get_cmd_unlocked(cmd, multi_data)
+        # 恢复互斥锁：保护脆弱的路由器 Web 服务，强制所有 GET 请求排队执行
+        async with self._request_lock:
+            return await self._get_cmd_unlocked(cmd, multi_data)
 
     async def _get_cmd_unlocked(self, cmd: str, multi_data: bool = False) -> Dict:
         if not self.state.client:
@@ -306,13 +307,17 @@ class MU5001Client:
             logger.debug(f"GET 成功: {cmd[:50]}")
             return data
         except httpx.TimeoutException:
-            logger.error(f"GET 超时: {cmd}")
+            logger.error(f"GET 请求超时 (路由器可能处于高负载状态): {cmd}")
+            raise
+        except httpx.ConnectError:
+            logger.error(f"GET 拒绝连接 (路由器可能已断开或正在重启): {cmd}")
             raise
         except httpx.HTTPStatusError as e:
-            logger.error(f"GET HTTP {e.response.status_code}: {cmd}")
+            logger.error(f"GET HTTP 状态码错误 {e.response.status_code}: {cmd}")
             raise
         except Exception as e:
-            logger.error(f"GET 异常: {cmd}, {type(e).__name__}: {e}", exc_info=DEBUG_MODE)
+            # 这里的 exc_info=True 是排错神器，能精准打印出代码里比如 None.strip() 导致的崩溃行号
+            logger.error(f"GET 执行时发生代码内部异常: {cmd}, {type(e).__name__}: {e}", exc_info=True)
             raise
 
     # 异步 POST 设置设备配置，自动计算 AD 鉴权
@@ -730,7 +735,8 @@ class MU5001Client:
             )
             resp_data = login_resp.json()
             result = str(resp_data.get("result", "")).strip()
-            if result in ["0", "4"]:
+            #  统一成功状态码判断，并单独提取常见网络错误
+            if result in {"0", "4", "success"}:
                 self.state.client = client
                 self.state.ip = base_url
                 self.state.rd0 = rd0
@@ -738,11 +744,20 @@ class MU5001Client:
                 self.state.password = password
                 logger.info(f"登录成功: {base_url}")
                 return True
-            logger.warning(f"登录失败，result={result}")
+            logger.warning(f"登录被拒，接口返回结果: result={result}")
+            await client.aclose()
+            return False
+        except httpx.TimeoutException:
+            logger.error(f"登录超时：无法在 {LOGIN_TIMEOUT} 秒内收到设备响应，请检查信号或设备负载。")
+            await client.aclose()
+            return False
+        except httpx.ConnectError:
+            logger.error(f"登录断开：无法建立到底层地址 {ip} 的连接，设备可能未开机或 IP 错误。")
             await client.aclose()
             return False
         except Exception as e:
-            logger.error(f"登录异常: {type(e).__name__}: {e}", exc_info=DEBUG_MODE)
+            # 对于真正的内部逻辑错误，强制打印完整堆栈，无视 DEBUG_MODE 开关
+            logger.error(f"登录发生不可预期的内部逻辑错误: {type(e).__name__}: {e}", exc_info=True)
             await client.aclose()
             return False
 
@@ -1077,10 +1092,7 @@ class StatusCard(ft.Container):
      if self._last_data_hash.get(ctrl_id) != new_val:
          ctrl.value = new_val
          self._last_data_hash[ctrl_id] = new_val
-         try:
-             ctrl.update()  # 局部刷新
-         except Exception:
-             pass
+         # 取消单独控件的局部刷新，统一交由卡片末尾的 self.update() 打包处理
          return True
      return False
 
@@ -1981,11 +1993,11 @@ class SettingsCard(ft.Container):
             self.top_refresh_btn.disabled = disabled
             self.top_refresh_btn.update()
         
-        # 强制瞬间刷新控件
-        self.data_switch.update()
-        self.btn_net_mode_apply.update()
-        for cb in self.net_mode_cbs.values():
-            cb.update()
+        # 统一交给外层卡片进行一次性批量提交
+        try:
+            self.update()
+        except Exception:
+            pass
 
     # 界面交互代码
     async def on_data_switch_change(self, e):
@@ -2293,8 +2305,11 @@ class DeviceListCard(ft.Container):
         display_limit = max(4, int(available_height / 65)) 
         
         blacklisted_devices = getattr(status, "blacklisted_devices", [])
-        black_macs = {str(dev.get("mac", "")).upper() for dev in blacklisted_devices}
-        dev_hash = f"{display_limit}_{self.is_small_layout}_{self.is_ultra_small_layout}_{str(status.connected_devices)}_{str(blacklisted_devices)}"
+        black_macs = {str(dev.get("mac", "")).upper() for dev in blacklisted_devices}       
+        # 提取轻量的特征值（MAC+IP）拼接作为哈希，避免对字典列表执行极其耗时的 str() 强转
+        conn_info = "".join([str(d.get("mac", "")) + str(d.get("ip", "")) for d in status.connected_devices])
+        blk_info = "".join([str(d.get("mac", "")) for d in blacklisted_devices])
+        dev_hash = f"{display_limit}_{self.is_small_layout}_{self.is_ultra_small_layout}_{conn_info}_{blk_info}"
         
         if self._last_data_hash.get('device_list') != dev_hash:
             name_size = 10 if self.is_ultra_small_layout else (12 if self.is_small_layout else 15)

@@ -3278,6 +3278,1323 @@ class APNCard(ft.Container):
 # ==========================================
 # 主程序：应用类封装
 # ==========================================
+
+# ==========================================
+# UI 组件拆分 - 防火墙卡片
+# ==========================================
+class FirewallCard(ft.Container):
+    FEATURES = [
+        ("port_filter", "端口过滤"),
+        ("port_forward", "端口转发"),
+        ("port_map", "端口映射"),
+        ("upnp", "UPnP"),
+        ("dmz", "DMZ"),
+        ("system_security", "系统安全"),
+    ]
+
+    def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
+        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12, visible=False)
+        self.app_page = page
+        self.api_client = client
+        self.set_global_status = set_global_status_cb
+        self.current_feature = None
+        self.feature_buttons: List[ft.Control] = []
+        self.build_ui()
+
+    def build_ui(self):
+        self.txt_title = ft.Text("防火墙", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
+        self.txt_hint = ft.Text("选择下方功能进行设置", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+
+        feature_items = []
+        for key, label in self.FEATURES:
+            btn = create_button(label, on_click=self._make_feature_click(key), height=48, expand=True)
+            self.feature_buttons.append(btn)
+            feature_items.append(ft.Container(btn, col={"xs": 12, "sm": 6}))
+        self.feature_menu = ft.ResponsiveRow(controls=feature_items, spacing=14, run_spacing=14)
+
+        self.pf_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_pf_enable_change,
+        )
+        self.txt_pf_enable_label = ft.Text("MAC/IP/端口过滤", color=ft.Colors.INVERSE_PRIMARY, no_wrap=False)
+        self.pf_policy = create_dropdown(
+            "默认策略",
+            [ft.dropdown.Option("0", "放行"), ft.dropdown.Option("1", "丢弃")],
+            "0",
+            expand=True,
+        )
+        self.pf_policy.on_change = self.on_pf_policy_change
+        self.btn_pf_save = create_button("应用", on_click=self.on_save_port_filter)
+
+        # 规则表单（仅启用后显示）
+        self.txt_pf_settings_title = ft.Text("MAC/IP/端口过滤设置", size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.pf_ip_type = create_dropdown(
+            "IP 设置",
+            [ft.dropdown.Option("ipv4", "IPv4"), ft.dropdown.Option("ipv6", "IPv6")],
+            "ipv4",
+            expand=True,
+        )
+        self.pf_ip_type.on_change = self.on_pf_ip_type_change
+        self.pf_mac = create_text_field("MAC 地址", "", multiline=True, min_lines=1, max_lines=2, expand=True, hint_text="例如：00:1E:90:FF:FF:FF")
+        self.pf_sip = create_text_field("源 IP 地址", "", multiline=True, min_lines=1, max_lines=3, expand=True)
+        self.pf_dip = create_text_field("目的 IP 地址", "", multiline=True, min_lines=1, max_lines=3, expand=True)
+        self.pf_protocol = create_dropdown(
+            "协议",
+            [
+                ft.dropdown.Option("None", "全部"),
+                ft.dropdown.Option("TCP", "TCP"),
+                ft.dropdown.Option("UDP", "UDP"),
+                ft.dropdown.Option("ICMP", "ICMP"),
+            ],
+            "None",
+            expand=True,
+        )
+        self.pf_protocol.on_change = self.on_pf_protocol_change
+        self.pf_action = create_dropdown(
+            "操作",
+            [ft.dropdown.Option("Accept", "放行"), ft.dropdown.Option("Drop", "丢弃")],
+            "Drop",
+            expand=True,
+        )
+        self.txt_pf_src_port_range = ft.Text("源端口范围 (1~65535)", size=13, color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.pf_sport_start = create_text_field("源端口起", "0", input_filter=ft.NumbersOnlyInputFilter(), multiline=True, min_lines=1, max_lines=2, expand=True)
+        self.pf_sport_end = create_text_field("源端口止", "0", input_filter=ft.NumbersOnlyInputFilter(), multiline=True, min_lines=1, max_lines=2, expand=True)
+        self.txt_pf_dst_port_range = ft.Text("目的端口范围 (1~65535)", size=13, color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.pf_dport_start = create_text_field("目的端口起", "0", input_filter=ft.NumbersOnlyInputFilter(), multiline=True, min_lines=1, max_lines=2, expand=True)
+        self.pf_dport_end = create_text_field("目的端口止", "0", input_filter=ft.NumbersOnlyInputFilter(), multiline=True, min_lines=1, max_lines=2, expand=True)
+        self.pf_comment = create_text_field("备注", "", multiline=True, min_lines=1, max_lines=3, expand=True)
+        self.btn_pf_add = create_button("应用", on_click=self.on_add_port_filter_rule)
+        self.txt_pf_rules_title = ft.Text("系统当前 MAC/IP/端口过滤规则", size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.pf_rules_list = ft.Column(spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        self.pf_rules_empty = ft.Text("暂无过滤规则", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.btn_pf_delete = create_button("删除", on_click=self.on_delete_port_filter_rules)
+        self.pf_rules: List[Dict] = []
+        self.pf_rule_checks: Dict[str, ft.Checkbox] = {}
+
+        self.fw_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_fw_enable_change,
+        )
+        self.txt_fw_enable_label = ft.Text("启用端口转发", color=ft.Colors.INVERSE_PRIMARY, no_wrap=False)
+        self.fw_ip = create_text_field("IP 地址", "", multiline=True, min_lines=1, max_lines=3, expand=True)
+        self.fw_port_start = create_text_field("端口起", "", input_filter=ft.NumbersOnlyInputFilter(), multiline=True, min_lines=1, max_lines=2, expand=True)
+        self.fw_port_end = create_text_field("端口止", "", input_filter=ft.NumbersOnlyInputFilter(), multiline=True, min_lines=1, max_lines=2, expand=True)
+        self.txt_fw_port_range = ft.Text("端口范围 (1~65535)", size=13, color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.fw_protocol = create_dropdown("协议", [ft.dropdown.Option("TCP&UDP", "TCP+UDP"), ft.dropdown.Option("TCP", "TCP"), ft.dropdown.Option("UDP", "UDP")], "TCP&UDP", expand=True)
+        self.fw_comment = create_text_field("备注", "", multiline=True, min_lines=1, max_lines=3, expand=True)
+        self.btn_fw_add = create_button("添加", on_click=self.on_add_port_forward_rule)
+        self.btn_fw_delete = create_button("删除", on_click=self.on_delete_port_forward_rules)
+        self.fw_rules: List[Dict] = []
+        self.fw_rule_checks: Dict[int, ft.Checkbox] = {}
+        self.txt_fw_rules_title = ft.Text("系统当前虚拟服务器", size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.fw_rules_list = ft.Column(spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        self.fw_rules_empty = ft.Text("暂无转发规则", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+
+        self.pm_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_pm_enable_change,
+        )
+        self.pm_from = create_text_field("源端口 (1~65000)", "", input_filter=ft.NumbersOnlyInputFilter(), multiline=True, min_lines=1, max_lines=2, expand=True)
+        self.pm_ip = create_text_field("目的 IP 地址", "", multiline=True, min_lines=1, max_lines=3, expand=True)
+        self.pm_to = create_text_field("目的端口 (1~65000)", "", input_filter=ft.NumbersOnlyInputFilter(), multiline=True, min_lines=1, max_lines=2, expand=True)
+        self.pm_protocol = create_dropdown("协议", [ft.dropdown.Option("TCP&UDP", "TCP+UDP"), ft.dropdown.Option("TCP", "TCP"), ft.dropdown.Option("UDP", "UDP")], "TCP&UDP", expand=True)
+        self.pm_comment = create_text_field("备注", "", multiline=True, min_lines=1, max_lines=3, expand=True)
+        self.btn_pm_add = create_button("添加", on_click=self.on_add_port_map_rule)
+        self.txt_pm_enable_label = ft.Text("启用端口映射", color=ft.Colors.INVERSE_PRIMARY, no_wrap=False)
+        self.btn_pm_delete = create_button("删除", on_click=self.on_delete_port_map_rules)
+        self.pm_rules: List[Dict] = []
+        self.pm_rule_checks: Dict[int, ft.Checkbox] = {}
+        self.is_small_layout = False
+        self.is_ultra_small_layout = False
+        self.txt_pm_rules_title = ft.Text("当前映射规则", size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.pm_rules_list = ft.Column(spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        self.pm_rules_empty = ft.Text("暂无映射规则", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+
+        self.upnp_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_upnp_enable_change,
+        )
+        self.txt_upnp_enable_label = ft.Text("启用 UPnP", color=ft.Colors.INVERSE_PRIMARY, no_wrap=False)
+
+        self.dmz_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_dmz_enable_change,
+        )
+        self.dmz_ip = create_text_field("DMZ 主机 IP", "", visible=False, multiline=True, min_lines=1, max_lines=3, expand=True)
+        self.btn_dmz_save = create_button("应用", on_click=self.on_save_dmz)
+        self.btn_dmz_save.visible = False
+
+        self.remote_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_sys_security_change,
+        )
+        self.ping_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_sys_security_change,
+        )
+        self.txt_remote_label = ft.Text("远程管理（通过 WAN 口）", color=ft.Colors.INVERSE_PRIMARY, no_wrap=False)
+        self.txt_ping_label = ft.Text("从外网 PING 入", color=ft.Colors.INVERSE_PRIMARY, no_wrap=False)
+        self._sys_security_loading = False
+
+        self.panel_port_filter = ft.Column([
+            ft.Row([self.pf_enable, self.txt_pf_enable_label], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+            self.pf_policy,
+            self.btn_pf_save,
+            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
+            self.txt_pf_settings_title,
+            self.pf_ip_type,
+            self.pf_mac,
+            self.pf_sip,
+            self.pf_dip,
+            self.pf_protocol,
+            self.pf_action,
+            self.txt_pf_src_port_range,
+            ft.ResponsiveRow([
+                ft.Container(self.pf_sport_start, col={"xs": 12, "sm": 6}),
+                ft.Container(self.pf_sport_end, col={"xs": 12, "sm": 6}),
+            ], spacing=8, run_spacing=8),
+            self.txt_pf_dst_port_range,
+            ft.ResponsiveRow([
+                ft.Container(self.pf_dport_start, col={"xs": 12, "sm": 6}),
+                ft.Container(self.pf_dport_end, col={"xs": 12, "sm": 6}),
+            ], spacing=8, run_spacing=8),
+            self.pf_comment,
+            self.btn_pf_add,
+            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
+            self.txt_pf_rules_title,
+            self.pf_rules_list,
+            self.pf_rules_empty,
+            self.btn_pf_delete,
+        ], spacing=10, visible=False)
+
+        self.panel_port_forward = ft.Column([
+            ft.Row([self.fw_enable, self.txt_fw_enable_label], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
+            self.fw_ip,
+            self.txt_fw_port_range,
+            ft.ResponsiveRow([
+                ft.Container(self.fw_port_start, col={"xs": 12, "sm": 6}),
+                ft.Container(self.fw_port_end, col={"xs": 12, "sm": 6}),
+            ], spacing=8, run_spacing=8),
+            self.fw_protocol,
+            self.fw_comment,
+            self.btn_fw_add,
+            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
+            self.txt_fw_rules_title,
+            self.fw_rules_list,
+            self.fw_rules_empty,
+            self.btn_fw_delete,
+        ], spacing=10, visible=False)
+
+        self.panel_port_map = ft.Column([
+            ft.Row([self.pm_enable, self.txt_pm_enable_label], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
+            self.pm_from,
+            self.pm_ip,
+            self.pm_to,
+            self.pm_protocol,
+            self.pm_comment,
+            self.btn_pm_add,
+            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
+            self.txt_pm_rules_title,
+            self.pm_rules_list,
+            self.pm_rules_empty,
+            self.btn_pm_delete,
+        ], spacing=10, visible=False)
+
+        self.panel_upnp = ft.Column([
+            ft.Row([self.upnp_enable, self.txt_upnp_enable_label], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+        ], spacing=10, visible=False)
+
+        self.panel_dmz = ft.Column([
+            ft.Row([self.dmz_enable, ft.Text("启用", color=ft.Colors.INVERSE_PRIMARY)], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+            self.dmz_ip,
+            self.btn_dmz_save,
+        ], spacing=10, visible=False)
+
+        self.panel_system_security = ft.Column([
+            ft.Row([self.remote_enable, self.txt_remote_label], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+            ft.Row([self.ping_enable, self.txt_ping_label], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+        ], spacing=10, visible=False)
+
+        self.detail_panel = ft.Column([
+            self.panel_port_filter,
+            self.panel_port_forward,
+            self.panel_port_map,
+            self.panel_upnp,
+            self.panel_dmz,
+            self.panel_system_security,
+        ], spacing=0, visible=False)
+
+        self.content = ft.Column([
+            self.txt_title,
+            self.txt_hint,
+            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+            self.feature_menu,
+            self.detail_panel,
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+
+    def _make_feature_click(self, key: str):
+        async def handler(e):
+            await self.show_feature(key)
+        return handler
+
+    def _hide_all_panels(self):
+        for p in [
+            self.panel_port_filter, self.panel_port_forward, self.panel_port_map,
+            self.panel_upnp, self.panel_dmz, self.panel_system_security
+        ]:
+            p.visible = False
+
+    def _to_bool_flag(self, value) -> bool:
+        """设备开关字段统一解析：1/true/on/yes 视为开启。"""
+        return str(value).strip().lower() in {"1", "true", "on", "yes", "enable", "enabled"}
+
+    async def sync_current_feature(self):
+        """登录/重登后，如果当前正停留在防火墙功能页，则重新查询并同步开关状态。"""
+        if not self.visible or not self.current_feature:
+            return
+        await self.load_feature(self.current_feature)
+
+    def show_menu(self):
+        self.current_feature = None
+        self.feature_menu.visible = True
+        self.detail_panel.visible = False
+        self._hide_all_panels()
+        self.txt_title.value = "防火墙"
+        self.txt_hint.value = "选择下方功能进行设置"
+        self.txt_hint.visible = True
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    async def show_feature(self, key: str):
+        self.current_feature = key
+        self.feature_menu.visible = False
+        self.detail_panel.visible = True
+        self._hide_all_panels()
+        titles = {k: n for k, n in self.FEATURES}
+        self.txt_title.value = titles.get(key, "防火墙")
+        self.txt_hint.visible = False
+        panel_map = {
+            "port_filter": self.panel_port_filter,
+            "port_forward": self.panel_port_forward,
+            "port_map": self.panel_port_map,
+            "upnp": self.panel_upnp,
+            "dmz": self.panel_dmz,
+            "system_security": self.panel_system_security,
+        }
+        panel = panel_map.get(key)
+        if panel:
+            panel.visible = True
+        try:
+            self.update()
+        except Exception:
+            pass
+        await self.load_feature(key)
+
+    async def load_feature(self, key: str, silent: bool = False):
+        try:
+            if key == "port_filter":
+                cmd = "IPPortFilterEnable,DefaultFirewallPolicy," + ",".join(
+                    [f"IPPortFilterRules_{i}" for i in range(10)]
+                    + [f"IPPortFilterRulesv6_{i}" for i in range(10)]
+                )
+                data = await self.api_client.get_cmd(cmd, multi_data=True)
+                self.pf_enable.value = str(data.get("IPPortFilterEnable", "0")) == "1"
+                self.pf_policy.value = str(data.get("DefaultFirewallPolicy", "0") or "0")
+                self.pf_action.value = "Accept" if self.pf_policy.value == "1" else "Drop"
+                self.pf_rules = self._parse_port_filter_rules(data)
+                self._render_port_filter_rules()
+                self.on_pf_ip_type_change()
+                self._update_port_filter_visibility()
+            elif key == "port_forward":
+                cmd = "PortForwardEnable," + ",".join([f"PortForwardRules_{i}" for i in range(20)])
+                data = await self.api_client.get_cmd(cmd, multi_data=True)
+                self.fw_enable.value = str(data.get("PortForwardEnable", "0")) == "1"
+                self.fw_rules = self._parse_port_forward_rules(data)
+                self._render_port_forward_rules()
+            elif key == "port_map":
+                cmd = "PortMapEnable," + ",".join([f"PortMapRules_{i}" for i in range(20)])
+                data = await self.api_client.get_cmd(cmd, multi_data=True)
+                self.pm_enable.value = str(data.get("PortMapEnable", "0")) == "1"
+                self.pm_rules = self._parse_port_map_rules(data)
+                self._render_port_map_rules()
+            elif key == "upnp":
+                data = await self.api_client.get_cmd("upnpEnabled", multi_data=True)
+                self.upnp_enable.value = str(data.get("upnpEnabled", "0")) == "1"
+            elif key == "dmz":
+                data = await self.api_client.get_cmd(
+                    "DMZEnable,DMZIPAddress,lan_ipaddr,lan_netmask", multi_data=True
+                )
+                self.dmz_enable.value = str(data.get("DMZEnable", "0")) == "1"
+                self.dmz_ip.value = data.get("DMZIPAddress", "") or ""
+                enabled = bool(self.dmz_enable.value)
+                self.dmz_ip.visible = enabled
+                self.btn_dmz_save.visible = enabled
+            elif key == "system_security":
+                data = await self.api_client.get_cmd(
+                    "RemoteManagement,WANPingFilter", multi_data=True
+                )
+                # 与官方一致：1=启用，0=关闭；兼容空值/布尔字符串
+                self._sys_security_loading = True
+                try:
+                    self.remote_enable.value = self._to_bool_flag(data.get("RemoteManagement"))
+                    self.ping_enable.value = self._to_bool_flag(data.get("WANPingFilter"))
+                finally:
+                    self._sys_security_loading = False
+                logger.info(
+                    "系统安全状态同步: RemoteManagement=%r -> %s, WANPingFilter=%r -> %s",
+                    data.get("RemoteManagement"), self.remote_enable.value,
+                    data.get("WANPingFilter"), self.ping_enable.value,
+                )
+            try:
+                self.update()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"加载防火墙配置失败 [{key}]: {e}", exc_info=DEBUG_MODE)
+            if not silent:
+                self.set_global_status("防火墙配置加载失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "防火墙配置加载失败", False)
+
+    def _update_port_filter_visibility(self):
+        """与官方一致：关闭时只显示总开关+应用；启用后显示策略与规则区。"""
+        enabled = bool(self.pf_enable.value)
+        self.pf_policy.visible = enabled
+        for ctrl in [
+            self.txt_pf_settings_title, self.pf_ip_type, self.pf_mac, self.pf_sip, self.pf_dip,
+            self.pf_protocol, self.pf_action, self.pf_comment, self.btn_pf_add,
+            self.txt_pf_rules_title, self.pf_rules_list, self.pf_rules_empty, self.btn_pf_delete,
+            self.txt_pf_src_port_range, self.pf_sport_start, self.pf_sport_end,
+            self.txt_pf_dst_port_range, self.pf_dport_start, self.pf_dport_end,
+        ]:
+            ctrl.visible = enabled
+        if enabled:
+            self.on_pf_protocol_change()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def on_pf_enable_change(self, e=None):
+        self.pf_action.value = "Accept" if str(self.pf_policy.value or "1") == "1" else "Drop"
+        self._update_port_filter_visibility()
+
+    def on_pf_policy_change(self, e=None):
+        self.pf_action.value = "Accept" if str(self.pf_policy.value or "1") == "1" else "Drop"
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def on_pf_ip_type_change(self, e=None):
+        # 官方：IPv6 时标签为 源/目的 IPv6 地址
+        is_v6 = str(self.pf_ip_type.value or "ipv4").lower() == "ipv6"
+        self.pf_sip.label = "源 IPv6 地址" if is_v6 else "源 IP 地址"
+        self.pf_dip.label = "目的 IPv6 地址" if is_v6 else "目的 IP 地址"
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def on_pf_protocol_change(self, e=None):
+        proto = str(self.pf_protocol.value or "None")
+        need_port = proto in {"TCP", "UDP"}
+        for ctrl in [
+            self.txt_pf_src_port_range, self.pf_sport_start, self.pf_sport_end,
+            self.txt_pf_dst_port_range, self.pf_dport_start, self.pf_dport_end,
+        ]:
+            ctrl.visible = bool(self.pf_enable.value) and need_port
+        if need_port:
+            if str(self.pf_sport_start.value or "0") == "0":
+                self.pf_sport_start.value = "1"
+            if str(self.pf_sport_end.value or "0") == "0":
+                self.pf_sport_end.value = "65535"
+            if str(self.pf_dport_start.value or "0") == "0":
+                self.pf_dport_start.value = "1"
+            if str(self.pf_dport_end.value or "0") == "0":
+                self.pf_dport_end.value = "65535"
+        else:
+            self.pf_sport_start.value = "0"
+            self.pf_sport_end.value = "0"
+            self.pf_dport_start.value = "0"
+            self.pf_dport_end.value = "0"
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    async def on_save_port_filter(self, e):
+        try:
+            ok = await self.api_client.post_cmd("BASIC_SETTING", {
+                "portFilterEnabled": "1" if self.pf_enable.value else "0",
+                "defaultFirewallPolicy": self.pf_policy.value or "0",
+            })
+            if ok:
+                self.set_global_status("端口过滤已应用", ft.Colors.PRIMARY)
+                show_toast(self.app_page, "端口过滤应用成功", True)
+                await self.load_feature("port_filter")
+            else:
+                self.set_global_status("端口过滤应用失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "端口过滤应用失败", False)
+        except Exception as ex:
+            logger.error(f"保存端口过滤失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "端口过滤应用异常", False)
+
+    def _filter_action_label(self, value: str) -> str:
+        v = str(value or "").strip().lower()
+        if v in {"1", "accept", "filter_accept", "放行"}:
+            return "放行"
+        if v in {"0", "drop", "filter_drop", "丢弃"}:
+            return "丢弃"
+        return str(value or "--")
+
+    def _parse_port_filter_rules(self, data: Dict) -> List[Dict]:
+        """官方 CSV: sip,?,sFrom,sTo,dip,?,dFrom,dTo,protocol,action,comment,mac"""
+        rules: List[Dict] = []
+
+        def parse_one(raw: str, index: int, ip_type: str):
+            parts = raw.split(",")
+            while len(parts) < 12:
+                parts.append("")
+            sip = "" if parts[0] in {"", "any/0"} else parts[0]
+            dip = "" if parts[4] in {"", "any/0"} else parts[4]
+            s_from, s_to = parts[2], parts[3]
+            d_from, d_to = parts[6], parts[7]
+            sport = "" if str(s_from) == "0" else f"{s_from} - {s_to}"
+            dport = "" if str(d_from) == "0" else f"{d_from} - {d_to}"
+            action_raw = parts[9]
+            rules.append({
+                "index": str(index),
+                "macAddress": parts[11],
+                "sourceIpAddress": sip,
+                "destIpAddress": dip,
+                "sourcePortRange": sport or "--",
+                "destPortRange": dport or "--",
+                "protocol": self._filter_protocol_label(parts[8]),
+                "protocol_raw": parts[8],
+                "action": self._filter_action_label(action_raw),
+                "action_raw": action_raw,
+                "comment": parts[10],
+                "ipType": ip_type,
+            })
+
+        for i in range(10):
+            raw = str(data.get(f"IPPortFilterRules_{i}", "") or "").strip()
+            if raw:
+                parse_one(raw, i, "IPv4")
+        for i in range(10):
+            raw = str(data.get(f"IPPortFilterRulesv6_{i}", "") or "").strip()
+            if raw:
+                parse_one(raw, 10 + i, "IPv6")
+        return rules
+
+    def _filter_protocol_label(self, value: str) -> str:
+        """端口过滤专用协议码（与端口转发/映射不同）。
+        官方对照：全部 / TCP / UDP / ICMP
+        """
+        raw = str(value or "").strip()
+        v = raw.upper().replace("+", "&")
+        mapping = {
+            # 设备数字码（实测对照官方列表）
+            "0": "全部",
+            "5": "全部",
+            "NONE": "全部",
+            "NULL": "全部",
+            "ALL": "全部",
+            "全部": "全部",
+            "1": "TCP",
+            "TCP": "TCP",
+            "2": "UDP",
+            "UDP": "UDP",
+            "4": "ICMP",
+            "ICMP": "ICMP",
+            # 兼容个别固件字符串
+            "3": "TCP",
+            "6": "TCP",
+            "17": "UDP",
+        }
+        return mapping.get(v, mapping.get(raw, (raw or "--")))
+
+    def _render_port_filter_rules(self):
+        """大屏横向一行；小屏标签/内容分行显示。"""
+        self.pf_rule_checks = {}
+        rows = []
+        text_size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 13)
+        item_padding = 5 if self.is_ultra_small_layout else (7 if self.is_small_layout else 10)
+        item_spacing = 4 if self.is_ultra_small_layout else 8
+
+        for rule in self.pf_rules:
+            cb = create_checkbox(label="", value=False, data=str(rule["index"]))
+            if getattr(cb, "label_style", None) is None:
+                cb.label_style = ft.TextStyle(size=text_size, color=ft.Colors.ON_SURFACE)
+            else:
+                cb.label_style.size = text_size
+            self.pf_rule_checks[str(rule["index"])] = cb
+
+            mac = str(rule.get("macAddress") or "").strip() or "--"
+            ip_type = str(rule.get("ipType") or "--")
+            sip = str(rule.get("sourceIpAddress") or "").strip() or "--"
+            dip = str(rule.get("destIpAddress") or "").strip() or "--"
+            protocol = str(rule.get("protocol") or "--")
+            sport = str(rule.get("sourcePortRange") or "--")
+            dport = str(rule.get("destPortRange") or "--")
+            action = str(rule.get("action") or "--")
+            comment = str(rule.get("comment") or "").strip() or "--"
+
+            if self.is_small_layout or self.is_ultra_small_layout:
+                def _kv(label: str, value: str) -> ft.Column:
+                    return ft.Column(
+                        [
+                            ft.Text(f"{label}：", size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                            ft.Text(value, size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                        ],
+                        spacing=1,
+                        horizontal_alignment=ft.CrossAxisAlignment.START,
+                    )
+                info = ft.Column(
+                    [
+                        _kv("MAC 地址", mac),
+                        _kv("IP 类型", ip_type),
+                        _kv("源 IP 地址", sip),
+                        _kv("目的 IP 地址", dip),
+                        _kv("协议", protocol),
+                        _kv("源端口范围", sport),
+                        _kv("目的端口范围", dport),
+                        _kv("操作", action),
+                        _kv("备注", comment),
+                    ],
+                    spacing=2 if self.is_ultra_small_layout else 3,
+                    horizontal_alignment=ft.CrossAxisAlignment.START,
+                )
+                item_content = ft.Column(
+                    [
+                        ft.Row(
+                            [cb, ft.Text(f"规则 {int(rule.get('index', 0)) + 1 if str(rule.get('index', '0')).isdigit() else rule.get('index')}", size=text_size, color=ft.Colors.ON_SURFACE_VARIANT)],
+                            spacing=6,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        info,
+                    ],
+                    spacing=item_spacing,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                )
+            else:
+                # 大屏：与官方表格一致，横向一行
+                def cell(title: str, value: str, expand: int = 1) -> ft.Container:
+                    return ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text(title, size=11, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=False),
+                                ft.Text(value, size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                            ],
+                            spacing=2,
+                        ),
+                        expand=expand,
+                    )
+                info = ft.Row(
+                    [
+                        cell("MAC 地址", mac, 1),
+                        cell("IP 类型", ip_type, 1),
+                        cell("源 IP 地址", sip, 2),
+                        cell("目的 IP 地址", dip, 2),
+                        cell("协议", protocol, 1),
+                        cell("源端口范围", sport, 1),
+                        cell("目的端口范围", dport, 1),
+                        cell("操作", action, 1),
+                        cell("备注", comment, 1),
+                    ],
+                    spacing=item_spacing,
+                    expand=True,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                )
+                item_content = ft.Row(
+                    [
+                        ft.Container(cb, width=28, alignment=ft.Alignment(-1, 0)),
+                        info,
+                    ],
+                    spacing=item_spacing,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                )
+
+            rows.append(
+                ft.Container(
+                    content=item_content,
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                    border_radius=8,
+                    padding=item_padding,
+                )
+            )
+
+        self.pf_rules_list.controls = rows
+        self.pf_rules_list.spacing = 4 if self.is_ultra_small_layout else (6 if self.is_small_layout else 8)
+        self.pf_rules_empty.visible = len(rows) == 0
+        self.pf_rules_empty.size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 12)
+        self.txt_pf_rules_title.size = 11 if self.is_ultra_small_layout else (13 if self.is_small_layout else 15)
+
+    async def on_add_port_filter_rule(self, e):
+        try:
+            if not self.pf_enable.value:
+                show_toast(self.app_page, "请先启用 MAC/IP/端口过滤", False)
+                return
+            comment = (self.pf_comment.value or "").strip()
+            if not comment:
+                show_toast(self.app_page, "备注不能为空", False)
+                return
+            # 官方抓包：IPv4/IPv6 都走 ADD_IP_PORT_FILETER_V4V6，并带 ip_version
+            ip_type = str(self.pf_ip_type.value or "ipv4").lower()
+            if ip_type not in {"ipv4", "ipv6"}:
+                ip_type = "ipv4"
+            params = {
+                "ip_version": ip_type,
+                "mac_address": (self.pf_mac.value or "").strip().upper(),
+                "dip_address": (self.pf_dip.value or "").strip(),
+                "sip_address": (self.pf_sip.value or "").strip(),
+                "dFromPort": (self.pf_dport_start.value or "0").strip() or "0",
+                "dToPort": (self.pf_dport_end.value or "0").strip() or "0",
+                "sFromPort": (self.pf_sport_start.value or "0").strip() or "0",
+                "sToPort": (self.pf_sport_end.value or "0").strip() or "0",
+                "action": self.pf_action.value or "Drop",
+                "protocol": self.pf_protocol.value or "None",
+                "comment": comment,
+            }
+            goform = "ADD_IP_PORT_FILETER_V4V6"
+            ok = await self.api_client.post_cmd(goform, params)
+            if ok:
+                self.pf_mac.value = ""
+                self.pf_sip.value = ""
+                self.pf_dip.value = ""
+                self.pf_comment.value = ""
+                self.pf_protocol.value = "None"
+                self.on_pf_protocol_change()
+                show_toast(self.app_page, "过滤规则已添加", True)
+                await self.load_feature("port_filter")
+            else:
+                show_toast(self.app_page, "过滤规则添加失败", False)
+        except Exception as ex:
+            logger.error(f"添加端口过滤规则失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "过滤规则添加异常", False)
+
+    async def on_delete_port_filter_rules(self, e):
+        try:
+            selected = [str(idx) for idx, cb in self.pf_rule_checks.items() if cb.value]
+            if not selected:
+                show_toast(self.app_page, "请先选择要删除的规则", False)
+                return
+            # 官方抓包：删除统一走 DEL_IP_PORT_FILETER_V4V6
+            # delete_id=0;  delete_id_v6=（可为空）
+            v4_ids = [i for i in selected if len(str(i)) == 1]
+            v6_ids = [str(i)[1:] for i in selected if len(str(i)) == 2]
+            ok = await self.api_client.post_cmd("DEL_IP_PORT_FILETER_V4V6", {
+                "delete_id": (";".join(v4_ids) + ";") if v4_ids else "",
+                "delete_id_v6": (";".join(v6_ids) + ";") if v6_ids else "",
+            })
+            if ok:
+                show_toast(self.app_page, "过滤规则已删除", True)
+                await self.load_feature("port_filter")
+            else:
+                show_toast(self.app_page, "过滤规则删除失败", False)
+        except Exception as ex:
+            logger.error(f"删除端口过滤规则失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "过滤规则删除异常", False)
+
+    def _parse_port_forward_rules(self, data: Dict) -> List[Dict]:
+        rules = []
+        for i in range(20):
+            raw = str(data.get(f"PortForwardRules_{i}", "") or "").strip()
+            if not raw:
+                continue
+            parts = raw.split(",")
+            while len(parts) < 5:
+                parts.append("")
+            port_start = parts[1]
+            port_end = parts[2]
+            rules.append({
+                "index": i,
+                "ipAddress": parts[0],
+                "portStart": port_start,
+                "portEnd": port_end,
+                "portRange": f"{port_start} - {port_end}" if port_start or port_end else "--",
+                "protocol": self._protocol_label(parts[3]),
+                "protocol_raw": parts[3],
+                "comment": parts[4],
+            })
+        return rules
+
+    def _render_port_forward_rules(self):
+        """大屏横向；小屏勾选框独立一行，信息在下方完整显示。"""
+        self.fw_rule_checks = {}
+        rows = []
+        text_size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 13)
+        item_padding = 5 if self.is_ultra_small_layout else (7 if self.is_small_layout else 10)
+        item_spacing = 4 if self.is_ultra_small_layout else 8
+
+        for rule in self.fw_rules:
+            cb = create_checkbox(label="", value=False, data=str(rule["index"]))
+            if getattr(cb, "label_style", None) is None:
+                cb.label_style = ft.TextStyle(size=text_size, color=ft.Colors.ON_SURFACE)
+            else:
+                cb.label_style.size = text_size
+            self.fw_rule_checks[rule["index"]] = cb
+
+            ip_addr = str(rule.get("ipAddress") or "--")
+            port_range = str(rule.get("portRange") or "--")
+            protocol = str(rule.get("protocol") or "--")
+            comment = str(rule.get("comment") or "").strip() or "--"
+
+            if self.is_small_layout or self.is_ultra_small_layout:
+                # 小屏：标签和内容分行显示，备注也换行
+                def _kv(label: str, value: str) -> ft.Column:
+                    return ft.Column(
+                        [
+                            ft.Text(f"{label}：", size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                            ft.Text(value, size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                        ],
+                        spacing=1,
+                        horizontal_alignment=ft.CrossAxisAlignment.START,
+                    )
+                info = ft.Column(
+                    [
+                        _kv("IP 地址", ip_addr),
+                        _kv("端口范围", port_range),
+                        _kv("协议", protocol),
+                        _kv("备注", comment),
+                    ],
+                    spacing=2 if self.is_ultra_small_layout else 3,
+                    horizontal_alignment=ft.CrossAxisAlignment.START,
+                )
+                item_content = ft.Column(
+                    [
+                        ft.Row(
+                            [cb, ft.Text(f"规则 {rule.get('index', 0) + 1}", size=text_size, color=ft.Colors.ON_SURFACE_VARIANT)],
+                            spacing=6,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        info,
+                    ],
+                    spacing=item_spacing,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                )
+            else:
+                def cell(title: str, value: str, expand: int = 1) -> ft.Container:
+                    return ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text(title, size=11, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1),
+                                ft.Text(value, size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                            ],
+                            spacing=2,
+                        ),
+                        expand=expand,
+                    )
+                info = ft.Row(
+                    [
+                        cell("IP 地址", ip_addr, 2),
+                        cell("端口范围", port_range, 2),
+                        cell("协议", protocol, 1),
+                        cell("备注", comment, 1),
+                    ],
+                    spacing=item_spacing,
+                    expand=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+                item_content = ft.Row(
+                    [
+                        ft.Container(cb, width=28, alignment=ft.Alignment(-1, 0)),
+                        info,
+                    ],
+                    spacing=item_spacing,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+
+            rows.append(
+                ft.Container(
+                    content=item_content,
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                    border_radius=8,
+                    padding=item_padding,
+                )
+            )
+
+        self.fw_rules_list.controls = rows
+        self.fw_rules_list.spacing = 4 if self.is_ultra_small_layout else (6 if self.is_small_layout else 8)
+        self.fw_rules_empty.visible = len(rows) == 0
+        self.fw_rules_empty.size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 12)
+        self.txt_fw_rules_title.size = 11 if self.is_ultra_small_layout else (13 if self.is_small_layout else 15)
+
+    async def on_fw_enable_change(self, e=None):
+        # 开关即当前状态：拨动后直接提交
+        try:
+            ok = await self.api_client.post_cmd("VIRTUAL_SERVER", {
+                "PortForwardEnable": "1" if self.fw_enable.value else "0",
+            })
+            if ok:
+                show_toast(self.app_page, f"端口转发已{'开启' if self.fw_enable.value else '关闭'}", True)
+                await self.load_feature("port_forward")
+            else:
+                show_toast(self.app_page, "端口转发状态更新失败", False)
+                self.fw_enable.value = not self.fw_enable.value
+                try:
+                    self.update()
+                except Exception:
+                    pass
+        except Exception as ex:
+            logger.error(f"切换端口转发失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "端口转发状态更新异常", False)
+            self.fw_enable.value = not self.fw_enable.value
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    async def on_add_port_forward_rule(self, e):
+        try:
+            if len(self.fw_rules) >= 20:
+                show_toast(self.app_page, "最多添加 20 条转发规则", False)
+                return
+            ok = await self.api_client.post_cmd("FW_FORWARD_ADD", {
+                "ipAddress": (self.fw_ip.value or "").strip(),
+                "portStart": (self.fw_port_start.value or "").strip(),
+                "portEnd": (self.fw_port_end.value or "").strip(),
+                "protocol": self.fw_protocol.value or "TCP&UDP",
+                "comment": (self.fw_comment.value or "").strip(),
+            })
+            if ok:
+                self.fw_ip.value = ""
+                self.fw_port_start.value = ""
+                self.fw_port_end.value = ""
+                self.fw_comment.value = ""
+                show_toast(self.app_page, "端口转发规则已添加", True)
+                await self.load_feature("port_forward")
+            else:
+                show_toast(self.app_page, "端口转发规则添加失败", False)
+        except Exception as ex:
+            logger.error(f"添加端口转发失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "端口转发规则添加异常", False)
+
+    async def on_delete_port_forward_rules(self, e):
+        try:
+            selected = [str(idx) for idx, cb in self.fw_rule_checks.items() if cb.value]
+            if not selected:
+                show_toast(self.app_page, "请先选择要删除的规则", False)
+                return
+            ok = await self.api_client.post_cmd("FW_FORWARD_DEL", {
+                "delete_id": ";".join(selected) + ";",
+            })
+            if ok:
+                show_toast(self.app_page, "转发规则已删除", True)
+                await self.load_feature("port_forward")
+            else:
+                show_toast(self.app_page, "转发规则删除失败", False)
+        except Exception as ex:
+            logger.error(f"删除端口转发失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "转发规则删除异常", False)
+
+    def _protocol_label(self, value: str) -> str:
+        """设备可能返回数字码或字符串，统一显示为下拉选项文案。"""
+        raw = str(value or "").strip()
+        v = raw.upper().replace("+", "&")
+        mapping = {
+            # 端口转发/映射（仅保留官方抓包确认值）
+            # 提交：TCP&UDP / TCP / UDP
+            # 回显：TCP => 1，UDP => 2，TCP+UDP => 3
+            "1": "TCP",
+            "2": "UDP",
+            "3": "TCP+UDP",
+            "TCP&UDP": "TCP+UDP",
+            "TCP+UDP": "TCP+UDP",
+            "TCP": "TCP",
+            "UDP": "UDP",
+        }
+        return mapping.get(v, mapping.get(raw, (raw or "--")))
+
+    def _parse_port_map_rules(self, data: Dict) -> List[Dict]:
+        rules = []
+        for i in range(20):
+            raw = str(data.get(f"PortMapRules_{i}", "") or "").strip()
+            if not raw:
+                continue
+            parts = raw.split(",")
+            # 官方格式: destIp,sourcePort,destPort,protocol,comment
+            while len(parts) < 5:
+                parts.append("")
+            rules.append({
+                "index": i,
+                "sourcePort": parts[1],
+                "destIpAddress": parts[0],
+                "destPort": parts[2],
+                "protocol": self._protocol_label(parts[3]),
+                "protocol_raw": parts[3],
+                "comment": parts[4],
+            })
+        return rules
+
+    def _render_port_map_rules(self):
+        """大屏横向；小屏勾选框独立一行，信息在下方完整显示。"""
+        self.pm_rule_checks = {}
+        rows = []
+        text_size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 13)
+        item_padding = 5 if self.is_ultra_small_layout else (7 if self.is_small_layout else 10)
+        item_spacing = 4 if self.is_ultra_small_layout else 8
+
+        for rule in self.pm_rules:
+            cb = create_checkbox(label="", value=False, data=str(rule["index"]))
+            if getattr(cb, "label_style", None) is None:
+                cb.label_style = ft.TextStyle(size=text_size, color=ft.Colors.ON_SURFACE)
+            else:
+                cb.label_style.size = text_size
+            self.pm_rule_checks[rule["index"]] = cb
+
+            src_port = str(rule.get("sourcePort") or "--")
+            dest_ip = str(rule.get("destIpAddress") or "--")
+            dest_port = str(rule.get("destPort") or "--")
+            protocol = str(rule.get("protocol") or "--")
+            comment = str(rule.get("comment") or "").strip() or "--"
+
+            if self.is_small_layout or self.is_ultra_small_layout:
+                # 小屏：勾选框单独一行，信息在下面，不再和勾选框并排挤压
+                # 小屏：标签和数字分行显示，避免窄屏裁切
+                def _kv(label: str, value: str) -> ft.Column:
+                    return ft.Column(
+                        [
+                            ft.Text(f"{label}：", size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                            ft.Text(value, size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                        ],
+                        spacing=1,
+                        horizontal_alignment=ft.CrossAxisAlignment.START,
+                    )
+                info = ft.Column(
+                    [
+                        _kv("源端口", src_port),
+                        _kv("目的IP", dest_ip),
+                        _kv("目的端口", dest_port),
+                        _kv("协议", protocol),
+                        _kv("备注", comment),
+                    ],
+                    spacing=2 if self.is_ultra_small_layout else 3,
+                    horizontal_alignment=ft.CrossAxisAlignment.START,
+                )
+                item_content = ft.Column(
+                    [
+                        ft.Row(
+                            [cb, ft.Text(f"规则 {rule.get('index', 0) + 1}", size=text_size, color=ft.Colors.ON_SURFACE_VARIANT)],
+                            spacing=6,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        info,
+                    ],
+                    spacing=item_spacing,
+                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                )
+            else:
+                # 大屏：横向分列
+                def cell(title: str, value: str, expand: int = 1) -> ft.Container:
+                    return ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text(title, size=11, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1),
+                                ft.Text(value, size=text_size, color=ft.Colors.ON_SURFACE, no_wrap=False),
+                            ],
+                            spacing=2,
+                        ),
+                        expand=expand,
+                    )
+                info = ft.Row(
+                    [
+                        cell("源端口", src_port, 1),
+                        cell("目的 IP 地址", dest_ip, 2),
+                        cell("目的端口", dest_port, 1),
+                        cell("协议", protocol, 1),
+                        cell("备注", comment, 1),
+                    ],
+                    spacing=item_spacing,
+                    expand=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+                item_content = ft.Row(
+                    [
+                        ft.Container(cb, width=28, alignment=ft.Alignment(-1, 0)),
+                        info,
+                    ],
+                    spacing=item_spacing,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+
+            rows.append(
+                ft.Container(
+                    content=item_content,
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                    border_radius=8,
+                    padding=item_padding,
+                )
+            )
+
+        self.pm_rules_list.controls = rows
+        self.pm_rules_list.spacing = 4 if self.is_ultra_small_layout else (6 if self.is_small_layout else 8)
+        self.pm_rules_empty.visible = len(rows) == 0
+        self.pm_rules_empty.size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 12)
+        self.txt_pm_rules_title.size = 11 if self.is_ultra_small_layout else (13 if self.is_small_layout else 15)
+
+
+    async def on_pm_enable_change(self, e=None):
+        # 官方开关独立提交：goformId=ADD_PORT_MAP + portMapEnabled
+        try:
+            ok = await self.api_client.post_cmd("ADD_PORT_MAP", {
+                "portMapEnabled": "1" if self.pm_enable.value else "0",
+            })
+            if ok:
+                show_toast(self.app_page, "端口映射开关已更新", True)
+                await self.load_feature("port_map")
+            else:
+                show_toast(self.app_page, "端口映射开关更新失败", False)
+                # 回滚开关显示
+                self.pm_enable.value = not self.pm_enable.value
+                try:
+                    self.update()
+                except Exception:
+                    pass
+        except Exception as ex:
+            logger.error(f"切换端口映射开关失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "端口映射开关更新异常", False)
+            self.pm_enable.value = not self.pm_enable.value
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    async def on_add_port_map_rule(self, e):
+        try:
+            if len(self.pm_rules) >= 20:
+                show_toast(self.app_page, "最多添加 20 条映射规则", False)
+                return
+            ok = await self.api_client.post_cmd("ADD_PORT_MAP", {
+                "portMapEnabled": "1" if self.pm_enable.value else "0",
+                "fromPort": (self.pm_from.value or "").strip(),
+                "ip_address": (self.pm_ip.value or "").strip(),
+                "toPort": (self.pm_to.value or "").strip(),
+                "protocol": self.pm_protocol.value or "TCP&UDP",
+                "comment": (self.pm_comment.value or "").strip(),
+            })
+            if ok:
+                self.pm_from.value = ""
+                self.pm_ip.value = ""
+                self.pm_to.value = ""
+                self.pm_comment.value = ""
+                show_toast(self.app_page, "端口映射规则已添加", True)
+                await self.load_feature("port_map")
+            else:
+                show_toast(self.app_page, "端口映射规则添加失败", False)
+        except Exception as ex:
+            logger.error(f"添加端口映射失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "端口映射规则添加异常", False)
+
+    async def on_delete_port_map_rules(self, e):
+        try:
+            selected = [str(idx) for idx, cb in self.pm_rule_checks.items() if cb.value]
+            if not selected:
+                show_toast(self.app_page, "请先选择要删除的规则", False)
+                return
+            ok = await self.api_client.post_cmd("DEL_PORT_MAP", {
+                "delete_id": ";".join(selected) + ";",
+            })
+            if ok:
+                show_toast(self.app_page, "映射规则已删除", True)
+                await self.load_feature("port_map")
+            else:
+                show_toast(self.app_page, "映射规则删除失败", False)
+        except Exception as ex:
+            logger.error(f"删除端口映射失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "映射规则删除异常", False)
+
+    async def on_upnp_enable_change(self, e=None):
+        # 开关即当前状态：拨动后直接提交
+        try:
+            ok = await self.api_client.post_cmd("UPNP_SETTING", {
+                "upnp_setting_option": "1" if self.upnp_enable.value else "0",
+            })
+            if ok:
+                show_toast(self.app_page, f"UPnP 已{'开启' if self.upnp_enable.value else '关闭'}", True)
+                await self.load_feature("upnp")
+            else:
+                show_toast(self.app_page, "UPnP 状态更新失败", False)
+                self.upnp_enable.value = not self.upnp_enable.value
+                try:
+                    self.update()
+                except Exception:
+                    pass
+        except Exception as ex:
+            logger.error(f"切换 UPnP 失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "UPnP 状态更新异常", False)
+            self.upnp_enable.value = not self.upnp_enable.value
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def on_dmz_enable_change(self, e=None):
+        enabled = bool(self.dmz_enable.value)
+        self.dmz_ip.visible = enabled
+        self.btn_dmz_save.visible = enabled
+        try:
+            self.update()
+        except Exception:
+            pass
+        # 关闭时直接提交；开启时显示输入框，等用户填 IP 后点应用
+        if not enabled:
+            asyncio.create_task(self._save_dmz_state())
+
+    async def _save_dmz_state(self):
+        try:
+            params = {"DMZEnabled": "1" if self.dmz_enable.value else "0"}
+            if self.dmz_enable.value:
+                params["DMZIPAddress"] = (self.dmz_ip.value or "").strip()
+            ok = await self.api_client.post_cmd("DMZ_SETTING", params)
+            if ok:
+                show_toast(self.app_page, "DMZ 设置应用成功", True)
+                await self.load_feature("dmz")
+            else:
+                show_toast(self.app_page, "DMZ 设置应用失败", False)
+        except Exception as ex:
+            logger.error(f"保存 DMZ 失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "DMZ 设置应用异常", False)
+
+    async def on_save_dmz(self, e):
+        if self.dmz_enable.value and not (self.dmz_ip.value or "").strip():
+            show_toast(self.app_page, "请先填写 DMZ 主机 IP", False)
+            return
+        await self._save_dmz_state()
+
+    async def on_sys_security_change(self, e=None):
+        # 开关即当前状态，拨动后直接提交
+        if getattr(self, "_sys_security_loading", False):
+            return
+        try:
+            remote = "1" if self.remote_enable.value else "0"
+            ping = "1" if self.ping_enable.value else "0"
+            ok = await self.api_client.post_cmd("FW_SYS", {
+                "remoteManagementEnabled": remote,
+                "pingFrmWANFilterEnabled": ping,
+                "RemoteManagement": remote,
+                "WANPingFilter": ping,
+            })
+            if ok:
+                show_toast(self.app_page, "系统安全已更新", True)
+                await self.load_feature("system_security")
+            else:
+                show_toast(self.app_page, "系统安全更新失败", False)
+                # 失败回滚：重新读取设备状态
+                await self.load_feature("system_security")
+        except Exception as ex:
+            logger.error(f"切换系统安全失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "系统安全更新异常", False)
+            await self.load_feature("system_security")
+
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        layout_changed = self.is_small_layout != is_small or self.is_ultra_small_layout != is_ultra_small
+        self.is_small_layout = is_small
+        self.is_ultra_small_layout = is_ultra_small
+        self.txt_title.size = 12 if is_ultra_small else (15 if is_small else 18)
+        self.txt_hint.size = 9 if is_ultra_small else (11 if is_small else 12)
+        self.txt_pm_rules_title.size = 11 if is_ultra_small else (13 if is_small else 15)
+        self.pm_rules_empty.size = 10 if is_ultra_small else (11 if is_small else 12)
+        self.txt_pm_enable_label.size = 11 if is_ultra_small else (13 if is_small else 14)
+        self.txt_fw_enable_label.size = 11 if is_ultra_small else (13 if is_small else 14)
+        if hasattr(self, "txt_pf_enable_label"):
+            self.txt_pf_enable_label.size = 11 if is_ultra_small else (13 if is_small else 14)
+        self.txt_fw_port_range.size = 10 if is_ultra_small else (12 if is_small else 13)
+        self.txt_fw_rules_title.size = 11 if is_ultra_small else (13 if is_small else 15)
+        if hasattr(self, "txt_pf_rules_title"):
+            self.txt_pf_rules_title.size = 11 if is_ultra_small else (13 if is_small else 15)
+        if hasattr(self, "txt_pf_settings_title"):
+            self.txt_pf_settings_title.size = 11 if is_ultra_small else (13 if is_small else 15)
+        if hasattr(self, "txt_pf_src_port_range"):
+            self.txt_pf_src_port_range.size = 10 if is_ultra_small else (12 if is_small else 13)
+            self.txt_pf_dst_port_range.size = 10 if is_ultra_small else (12 if is_small else 13)
+        self.fw_rules_empty.size = 10 if is_ultra_small else (11 if is_small else 12)
+        self.txt_upnp_enable_label.size = 11 if is_ultra_small else (13 if is_small else 14)
+        self.txt_remote_label.size = 11 if is_ultra_small else (13 if is_small else 14)
+        self.txt_ping_label.size = 11 if is_ultra_small else (13 if is_small else 14)
+        self.feature_menu.spacing = 6 if is_ultra_small else (10 if is_small else 14)
+        self.feature_menu.run_spacing = 6 if is_ultra_small else (10 if is_small else 14)
+        for item in self.feature_menu.controls:
+            item.col = {"xs": 12, "sm": 12} if is_small else {"xs": 12, "sm": 6}
+
+        # 填写项只缩小字号一档；框内文字允许自动换行，宽度撑满
+        field_text_size = 10 if is_ultra_small else (12 if is_small else 14)
+        field_label_size = 10 if is_ultra_small else (12 if is_small else 14)
+        for ctrl in [
+            self.pm_from, self.pm_ip, self.pm_to, self.pm_protocol, self.pm_comment,
+            self.fw_ip, self.fw_port_start, self.fw_port_end, self.fw_protocol, self.fw_comment,
+            self.pf_policy, self.pf_ip_type, self.pf_mac, self.pf_sip, self.pf_dip,
+            self.pf_protocol, self.pf_action, self.pf_comment,
+            self.pf_sport_start, self.pf_sport_end, self.pf_dport_start, self.pf_dport_end,
+            self.dmz_ip,
+        ]:
+            if hasattr(ctrl, "expand"):
+                ctrl.expand = True
+            if hasattr(ctrl, "text_size"):
+                ctrl.text_size = field_text_size
+            if hasattr(ctrl, "label_style") and ctrl.label_style is not None:
+                ctrl.label_style.size = field_label_size
+            if hasattr(ctrl, "hint_style") and ctrl.hint_style is not None:
+                ctrl.hint_style.size = field_label_size
+            # 文本输入框启用自动换行，避免窄屏裁切
+            if hasattr(ctrl, "multiline") and not isinstance(ctrl, ft.Dropdown):
+                ctrl.multiline = True
+                if hasattr(ctrl, "min_lines"):
+                    ctrl.min_lines = 1
+                if hasattr(ctrl, "max_lines"):
+                    ctrl.max_lines = 3
+        button_height = 36 if is_ultra_small else (42 if is_small else 48)
+        button_text_size = 11 if is_ultra_small else (13 if is_small else 14)
+        for btn in self.feature_buttons + [
+            self.btn_pf_save, self.btn_pf_add, self.btn_pf_delete,
+            self.btn_fw_add, self.btn_fw_delete,
+            self.btn_pm_add, self.btn_pm_delete,
+            self.btn_dmz_save
+        ]:
+            btn.height = button_height
+            if btn.style and getattr(btn.style, "text_style", None):
+                btn.style.text_style.size = button_text_size
+        self.padding = 8 if is_ultra_small else (12 if is_small else 15)
+        self.border_radius = 8 if is_ultra_small else (10 if is_small else 12)
+        self.content.spacing = 8 if is_ultra_small else (10 if is_small else 12)
+        # 布局变化或字号变化时重绘规则卡片
+        if self.pm_rules:
+            self._render_port_map_rules()
+        if getattr(self, 'fw_rules', None):
+            self._render_port_forward_rules()
+        if getattr(self, 'pf_rules', None):
+            self._render_port_filter_rules()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+
 class MU5001:
     def __init__(self, page: ft.Page):
         self.page = page
@@ -3367,6 +4684,7 @@ class MU5001:
         self.settings_card = SettingsCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status, on_reboot_cb=self.on_reboot_device)
         self.device_list_card = DeviceListCard(self.page, on_block_device=self.on_block_device, on_unblock_device=self.on_unblock_device)
         self.apn_card = APNCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status, refresh_config_cb=self.refresh_all)
+        self.firewall_card = FirewallCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
 
         # 构建主视图布局 (这一步会创建 self.theme_btn)
         self.build_main_view()
@@ -3399,6 +4717,9 @@ class MU5001:
         self.toolbox_content.visible = False
         if hasattr(self, 'apn_card'):
             self.apn_card.visible = False
+        if hasattr(self, 'firewall_card'):
+            self.firewall_card.visible = False
+            self.firewall_card.show_menu()
         self.view_toolbox.update()
 
     def show_wifi_settings(self, e):
@@ -3408,6 +4729,8 @@ class MU5001:
         self.settings_card.wifi_section.visible = True
         self.reboot_card.visible = False
         self.apn_card.visible = False
+        if hasattr(self, 'firewall_card'):
+            self.firewall_card.visible = False
         self.view_toolbox.update()
 
     def show_reboot_settings(self, e):
@@ -3417,6 +4740,8 @@ class MU5001:
         self.settings_card.wifi_section.visible = False
         self.reboot_card.visible = True
         self.apn_card.visible = False
+        if hasattr(self, 'firewall_card'):
+            self.firewall_card.visible = False
         self.view_toolbox.update()
 
     def show_apn_settings(self, e):
@@ -3425,6 +4750,23 @@ class MU5001:
         self.settings_card.wifi_section.visible = False
         self.reboot_card.visible = False
         self.apn_card.visible = True
+        if hasattr(self, 'firewall_card'):
+            self.firewall_card.visible = False
+        self.view_toolbox.update()
+
+    def show_firewall_settings(self, e):
+        self.toolbox_menu.visible = False
+        self.toolbox_content.visible = True
+        self.settings_card.wifi_section.visible = False
+        self.reboot_card.visible = False
+        self.apn_card.visible = False
+        if hasattr(self, 'firewall_card'):
+            self.firewall_card.visible = True
+            # 每次进入防火墙都重新拉取当前页状态，避免官方网页改过后本地开关不刷新
+            if self.firewall_card.current_feature is None:
+                self.firewall_card.show_menu()
+            else:
+                asyncio.create_task(self.firewall_card.show_feature(self.firewall_card.current_feature))
         self.view_toolbox.update()
 
     # 显示/隐藏断网界面的方法
@@ -3471,21 +4813,21 @@ class MU5001:
             
             self.swipe_accum += e.primary_delta
             
-            # 滑动距离超过 40 像素就触发切换页面
-            if self.swipe_accum < -40:
+            # 滑动距离超过 40 像素：在工具子页时左/右滑都返回上级菜单
+            if abs(self.swipe_accum) > 40:
                 if self.current_nav_index == 3 and self.toolbox_content.visible:
-                    self.show_toolbox_menu(None)
+                    # 防火墙子功能 -> 防火墙6项菜单；其他工具子页 -> 工具主菜单
+                    if hasattr(self, 'firewall_card') and self.firewall_card.visible and self.firewall_card.current_feature is not None:
+                        self.firewall_card.show_menu()
+                        self.view_toolbox.update()
+                    else:
+                        self.show_toolbox_menu(None)
                     self.swipe_locked = True
                     return
-                if self.current_nav_index < 3:
+                # 主导航页之间：左滑下一页，右滑上一页
+                if self.swipe_accum < -40 and self.current_nav_index < 3:
                     handle_nav_click(self.current_nav_index + 1)
-                self.swipe_locked = True
-            elif self.swipe_accum > 40:
-                if self.current_nav_index == 3 and self.toolbox_content.visible:
-                    self.show_toolbox_menu(None)
-                    self.swipe_locked = True
-                    return
-                if self.current_nav_index > 0:
+                elif self.swipe_accum > 40 and self.current_nav_index > 0:
                     handle_nav_click(self.current_nav_index - 1)
                 self.swipe_locked = True
 
@@ -3567,17 +4909,20 @@ class MU5001:
             ft.Container(self._create_tool_item(ft.Icons.WIFI, "WiFi 设置", self.show_wifi_settings), col={"xs": 12, "sm": 6}),
             ft.Container(self._create_tool_item(ft.Icons.RESTART_ALT, "定时重启", self.show_reboot_settings), col={"xs": 12, "sm": 6}),
             ft.Container(self._create_tool_item(ft.Icons.CELL_TOWER, "APN 设置", self.show_apn_settings), col={"xs": 12, "sm": 6}),
+            ft.Container(self._create_tool_item(ft.Icons.SECURITY, "防火墙", self.show_firewall_settings), col={"xs": 12, "sm": 6}),
         ]
         self.toolbox_menu = ft.ResponsiveRow(controls=self.toolbox_items, spacing=14, run_spacing=14)
         
         self.settings_card.wifi_section.visible = False
         self.reboot_card.visible = False
         self.apn_card.visible = False
+        self.firewall_card.visible = False
 
         self.toolbox_content = ft.Column([
             self.settings_card.wifi_section,
             self.reboot_card,
-            self.apn_card
+            self.apn_card,
+            self.firewall_card,
         ], visible=False)
 
         # 内部滚动容器
@@ -3991,6 +5336,9 @@ class MU5001:
         except Exception as conn_err:
             logger.warning(f"登录成功，开启数据连接失败: {conn_err}")
         await self.refresh_all()
+        # 单设备登录场景：重新登录后按设备最新状态同步防火墙开关
+        if hasattr(self, "firewall_card"):
+            await self.firewall_card.sync_current_feature()
         self.start_auto_refresh()
 
     async def do_relogin(self, e=None):
@@ -4023,6 +5371,10 @@ class MU5001:
                 verified = await self.refresh_all()
                 if not verified:
                     raise RuntimeError("重登后读取设备数据失败")
+
+                # 网页挤掉登录后重登：重新查询防火墙当前页开关状态
+                if hasattr(self, "firewall_card"):
+                    await self.firewall_card.sync_current_feature()
 
                 self.offline_count = 0
                 self.is_connected = True
@@ -4106,6 +5458,8 @@ class MU5001:
             self.device_list_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'apn_card'):
             self.apn_card.update_size(is_small, is_ultra_small)
+        if hasattr(self, 'firewall_card'):
+            self.firewall_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'toolbox_menu'):
             self.toolbox_menu.spacing = 6 if is_ultra_small else (10 if is_small else 14)
             self.toolbox_menu.run_spacing = 6 if is_ultra_small else (10 if is_small else 14)

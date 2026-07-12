@@ -3373,6 +3373,7 @@ class FirewallCard(ft.Container):
         self.btn_pf_delete = create_button("删除", on_click=self.on_delete_port_filter_rules)
         self.pf_rules: List[Dict] = []
         self.pf_rule_checks: Dict[str, ft.Checkbox] = {}
+        self._pf_loading = False
 
         self.fw_enable = ft.Switch(
             value=False,
@@ -3623,13 +3624,18 @@ class FirewallCard(ft.Container):
                     + [f"IPPortFilterRulesv6_{i}" for i in range(10)]
                 )
                 data = await self.api_client.get_cmd(cmd, multi_data=True)
-                self.pf_enable.value = str(data.get("IPPortFilterEnable", "0")) == "1"
-                self.pf_policy.value = str(data.get("DefaultFirewallPolicy", "0") or "0")
-                self.pf_action.value = "Accept" if self.pf_policy.value == "1" else "Drop"
-                self.pf_rules = self._parse_port_filter_rules(data)
-                self._render_port_filter_rules()
-                self.on_pf_ip_type_change()
-                self._update_port_filter_visibility()
+                self._pf_loading = True
+                try:
+                    self.pf_enable.value = str(data.get("IPPortFilterEnable", "0")) == "1"
+                    self.pf_policy.value = str(data.get("DefaultFirewallPolicy", "0") or "0")
+                    # 默认策略 1=丢弃 -> 规则操作默认放行；0=放行 -> 规则操作默认丢弃
+                    self.pf_action.value = "Accept" if self.pf_policy.value == "1" else "Drop"
+                    self.pf_rules = self._parse_port_filter_rules(data)
+                    self._render_port_filter_rules()
+                    self.on_pf_ip_type_change()
+                    self._update_port_filter_visibility()
+                finally:
+                    self._pf_loading = False
             elif key == "port_forward":
                 cmd = "PortForwardEnable," + ",".join([f"PortForwardRules_{i}" for i in range(20)])
                 data = await self.api_client.get_cmd(cmd, multi_data=True)
@@ -3681,9 +3687,11 @@ class FirewallCard(ft.Container):
                 show_toast(self.app_page, "防火墙配置加载失败", False)
 
     def _update_port_filter_visibility(self):
-        """与官方一致：关闭时只显示总开关+应用；启用后显示策略与规则区。"""
+        """关闭时只显示总开关；开启后显示默认策略、应用按钮和规则区。"""
         enabled = bool(self.pf_enable.value)
+        # 应用按钮只在开启时显示，且只用于提交默认策略
         self.pf_policy.visible = enabled
+        self.btn_pf_save.visible = enabled
         for ctrl in [
             self.txt_pf_settings_title, self.pf_ip_type, self.pf_mac, self.pf_sip, self.pf_dip,
             self.pf_protocol, self.pf_action, self.pf_comment, self.btn_pf_add,
@@ -3700,11 +3708,17 @@ class FirewallCard(ft.Container):
             pass
 
     def on_pf_enable_change(self, e=None):
-        self.pf_action.value = "Accept" if str(self.pf_policy.value or "1") == "1" else "Drop"
+        # 默认规则操作跟随默认策略：丢弃(1)->放行规则，放行(0)->丢弃规则
+        self.pf_action.value = "Accept" if str(self.pf_policy.value or "0") == "1" else "Drop"
         self._update_port_filter_visibility()
+        # 开关即时提交启用/关闭；默认策略仍由“应用”按钮单独提交
+        if getattr(self, "_pf_loading", False):
+            return
+        import asyncio
+        asyncio.create_task(self._submit_port_filter_enable())
 
     def on_pf_policy_change(self, e=None):
-        self.pf_action.value = "Accept" if str(self.pf_policy.value or "1") == "1" else "Drop"
+        self.pf_action.value = "Accept" if str(self.pf_policy.value or "0") == "1" else "Drop"
         try:
             self.update()
         except Exception:
@@ -3747,22 +3761,48 @@ class FirewallCard(ft.Container):
         except Exception:
             pass
 
-    async def on_save_port_filter(self, e):
+    async def _submit_port_filter_enable(self):
+        """开关只提交启用状态，并带上当前默认策略值（设备接口需要两个字段）。"""
         try:
+            enabled = bool(self.pf_enable.value)
             ok = await self.api_client.post_cmd("BASIC_SETTING", {
-                "portFilterEnabled": "1" if self.pf_enable.value else "0",
+                "portFilterEnabled": "1" if enabled else "0",
                 "defaultFirewallPolicy": self.pf_policy.value or "0",
             })
             if ok:
-                self.set_global_status("端口过滤已应用", ft.Colors.PRIMARY)
-                show_toast(self.app_page, "端口过滤应用成功", True)
+                show_toast(self.app_page, f"端口过滤已{'开启' if enabled else '关闭'}", True)
+                await self.load_feature("port_filter", silent=True)
+            else:
+                show_toast(self.app_page, "端口过滤开关更新失败", False)
+                await self.load_feature("port_filter", silent=True)
+        except Exception as ex:
+            logger.error(f"切换端口过滤开关失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "端口过滤开关更新异常", False)
+            try:
+                await self.load_feature("port_filter", silent=True)
+            except Exception:
+                pass
+
+    async def on_save_port_filter(self, e):
+        """应用按钮：仅在开启时提交默认策略。"""
+        try:
+            if not self.pf_enable.value:
+                show_toast(self.app_page, "请先开启 MAC/IP/端口过滤", False)
+                return
+            ok = await self.api_client.post_cmd("BASIC_SETTING", {
+                "portFilterEnabled": "1",
+                "defaultFirewallPolicy": self.pf_policy.value or "0",
+            })
+            if ok:
+                self.set_global_status("默认策略已应用", ft.Colors.PRIMARY)
+                show_toast(self.app_page, "默认策略应用成功", True)
                 await self.load_feature("port_filter")
             else:
-                self.set_global_status("端口过滤应用失败", ft.Colors.ERROR)
-                show_toast(self.app_page, "端口过滤应用失败", False)
+                self.set_global_status("默认策略应用失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "默认策略应用失败", False)
         except Exception as ex:
-            logger.error(f"保存端口过滤失败: {ex}", exc_info=DEBUG_MODE)
-            show_toast(self.app_page, "端口过滤应用异常", False)
+            logger.error(f"应用默认策略失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "默认策略应用异常", False)
 
     def _filter_action_label(self, value: str) -> str:
         v = str(value or "").strip().lower()

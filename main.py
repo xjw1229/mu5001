@@ -4,7 +4,9 @@ import hashlib
 import base64
 import logging
 import asyncio
-import webbrowser
+import time
+import re
+import ipaddress
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Set, Callable, Union
@@ -80,10 +82,29 @@ class WiFiMode(str, Enum):
     MERGED = "merged"
     SEPARATED = "separated"
 
+# 登录失败：clear_credentials=True 时才允许清除本地保存的密码
+class LoginError(Exception):
+    def __init__(self, message: str, *, clear_credentials: bool = False):
+        super().__init__(message)
+        self.clear_credentials = clear_credentials
+
+# 设备明确拒绝登录（密码错误 / 账号锁定等）
+class LoginAuthError(LoginError):
+    def __init__(self, message: str = "密码错误或账号锁定"):
+        super().__init__(message, clear_credentials=True)
+
+# 网络不可达、超时等临时故障，不应清除本地凭证
+class LoginNetworkError(LoginError):
+    def __init__(self, message: str = "连接失败，请检查地址和网络"):
+        super().__init__(message, clear_credentials=False)
+
 # 超时与间隔配置（单位：秒、次）
 API_TIMEOUT = 5               # 普通 API 请求超时
 LOGIN_TIMEOUT = 3             # 登录相关请求超时
-AUTO_REFRESH_INTERVAL = 1   # 实时数据自动刷新间隔
+AUTO_REFRESH_INTERVAL = 1                 # 实时状态自动刷新间隔
+STATION_LIST_REFRESH_INTERVAL = 3         # WiFi 设备列表刷新间隔
+LAN_STATION_LIST_REFRESH_INTERVAL = 5     # 有线设备列表刷新间隔
+BLACKLIST_REFRESH_INTERVAL = 5            # 黑名单刷新间隔
 OFFLINE_FAIL_THRESHOLD = 2    # 连续2次失败后显示断网
 NET_SWITCH_DELAY = 0.5        # 网络断连/重连等待时间
 
@@ -176,6 +197,76 @@ def safe_float(val):
     except (ValueError, TypeError):
         return 0.0
 
+# 规范化 MAC：支持 00:11:.. / 00-11-.. / 0011..；空串保持空，非法返回 None
+def normalize_mac(value: str) -> Optional[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    hex_only = re.sub(r"[^0-9A-Fa-f]", "", raw).upper()
+    if len(hex_only) != 12:
+        return None
+    return ":".join(hex_only[i:i+2] for i in range(0, 12, 2))
+
+# 校验是否为合法 MAC（非空且格式正确）
+def is_valid_mac(value: str) -> bool:
+    return normalize_mac(value) not in (None, "")
+
+# 校验 IPv4 地址
+def is_valid_ipv4(value: str) -> bool:
+    raw = (value or "").strip()
+    if not raw:
+        return False
+    try:
+        ipaddress.IPv4Address(raw)
+        return True
+    except (ValueError, ipaddress.AddressValueError):
+        return False
+
+# 校验 IPv6 地址（端口过滤可选 IPv6 时使用）
+def is_valid_ipv6(value: str) -> bool:
+    raw = (value or "").strip()
+    if not raw:
+        return False
+    try:
+        ipaddress.IPv6Address(raw)
+        return True
+    except (ValueError, ipaddress.AddressValueError):
+        return False
+
+# 按版本校验 IP（ipv4 / ipv6）
+def is_valid_ip(value: str, version: str = "ipv4") -> bool:
+    v = (version or "ipv4").strip().lower()
+    if v == "ipv6":
+        return is_valid_ipv6(value)
+    return is_valid_ipv4(value)
+
+
+# 解析端口号：合法返回 int，空串返回 None（表示未填），非法返回 -1
+def parse_port(value: str, allow_empty: bool = False):
+    raw = (value or "").strip()
+    if not raw:
+        return None if allow_empty else -1
+    if not raw.isdigit():
+        return -1
+    n = int(raw)
+    if n < 0 or n > 65535:
+        return -1
+    return n
+
+# 校验端口范围：start/end 均合法且 start <= end
+def is_valid_port_range(start_val: str, end_val: str, min_port: int = 1, max_port: int = 65535, allow_zero: bool = False) -> tuple:
+    s = parse_port(start_val, allow_empty=False)
+    e = parse_port(end_val, allow_empty=False)
+    if s == -1 or e == -1 or s is None or e is None:
+        return False, "端口格式不正确"
+    lo = 0 if allow_zero else min_port
+    if s < lo or s > max_port or e < lo or e > max_port:
+        return False, f"端口需在 {lo}~{max_port} 之间"
+    if s > e:
+        return False, "起始端口不能大于结束端口"
+    return True, ""
+
+
 # 将 LTE 频段列表转换为设备识别的十六进制掩码
 def lte_bands_to_mask(bands: List[str]) -> str:
     mask = 0
@@ -201,14 +292,44 @@ def mask_to_lte_bands(mask_str: str) -> List[str]:
 
 # 极速探活工具：绕过 HTTP，直接使用底层 TCP 敲门，0.5秒连不上直接判死
 async def check_router_alive(ip: str = "192.168.0.1", port: int = 80) -> bool:
+    # 去掉协议和路径，只保留主机部分
     pure_ip = ip.replace("http://", "").replace("https://", "").split("/")[0]
     try:
+        # 0.5 秒内 TCP 握手成功即视为在线
         reader, writer = await asyncio.wait_for(asyncio.open_connection(pure_ip, port), timeout=0.5)
         writer.close()
         await writer.wait_closed()
         return True
     except Exception:
+        # 超时或连不上：统一按离线处理
         return False
+
+
+# 后台任务启动器：把 Task 存进 owner.background_tasks，防止 GC 中途回收
+def spawn_background_task(owner, coro) -> asyncio.Task:
+    tasks = getattr(owner, "background_tasks", None)
+    if tasks is None:
+        # 兼容未初始化集合的调用方
+        tasks = set()
+        owner.background_tasks = tasks
+    task = asyncio.create_task(coro)
+    tasks.add(task)  # 强引用，避免任务被垃圾回收
+
+    def _on_done(t: asyncio.Task):
+        # 结束后自动移除，防止集合无限增长
+        tasks.discard(t)
+        if t.cancelled():
+            return
+        try:
+            exc = t.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            # 后台任务异常日志，避免静默失败
+            logger.error(f"后台任务异常: {type(exc).__name__}: {exc}", exc_info=exc)
+
+    task.add_done_callback(_on_done)
+    return task
 
 # ==========================================
 # API 客户端封装
@@ -271,6 +392,13 @@ class MU5001Client:
         self.state = state
         # 异步锁（Async Lock）机制
         self._request_lock = asyncio.Lock()
+        # 设备列表/黑名单本地缓存
+        self._station_cache: list = []
+        self._lan_cache: list = []
+        self._blacklist_cache: list = []
+        self._last_station_fetch: float = 0.0
+        self._last_lan_fetch: float = 0.0
+        self._last_blacklist_fetch: float = 0.0
         logger.debug("MU5001Client 实例已创建")
 
     # 拼接设备 IP 与接口路径，返回完整 URL
@@ -283,6 +411,13 @@ class MU5001Client:
             logger.debug("关闭 HTTP 客户端连接池")
             await self.state.client.aclose()
             self.state.client = None
+        # 会话结束时清空设备列表缓存，避免下次登录用到旧数据
+        self._station_cache = []
+        self._lan_cache = []
+        self._blacklist_cache = []
+        self._last_station_fetch = 0.0
+        self._last_lan_fetch = 0.0
+        self._last_blacklist_fetch = 0.0
 
     # 异步 GET 查询设备配置，cmd 支持逗号分隔多命令，multi_data 启用多数据返回模式
     async def get_cmd(self, cmd: str, multi_data: bool = False) -> Dict:
@@ -427,51 +562,6 @@ class MU5001Client:
                 return True
         except Exception as e:
             logger.warning(f"切换 WiFi 模式时断网 (预期现象): {e}")
-            return True
-
-    # WiFi 设置：修改 SSID 广播状态
-    async def apply_wifi_broadcast(self, is_merged: bool, broadcast_merged: bool, broadcast_24g: bool, broadcast_5g: bool) -> bool:
-        try:
-            async with self._request_lock:
-                ap_info = await self._get_cmd_unlocked("queryAccessPointInfo")
-                chip_payload = {
-                    "ChipIndex": "9",
-                    "AccessPointIndex": "0",
-                    "QrImageShow": "1",
-                    "QrImageShow_5G": "1",
-                    "wifi_syncparas_flag": "0"
-                }
-                
-                if ap_info and "ResponseList" in ap_info:
-                    for ap in ap_info["ResponseList"]:
-                        if ap.get("AccessPointIndex") != "0": 
-                            continue
-                        c_idx = ap.get("ChipIndex")
-                        if c_idx == "0": 
-                            chip_payload["AccessPointSwitchStatus"] = ap.get("AccessPointSwitchStatus", "1")
-                            chip_payload["SSID"] = ap.get("SSID", "")
-                            chip_payload["ApIsolate"] = ap.get("ApIsolate", "0")
-                            chip_payload["AuthMode"] = ap.get("AuthMode", "")
-                            chip_payload["EncrypType"] = ap.get("EncrypType", "")
-                        elif c_idx == "1": 
-                            chip_payload["AccessPointSwitchStatus_5G"] = ap.get("AccessPointSwitchStatus", "1")
-                            chip_payload["SSID_5G"] = ap.get("SSID", "")
-                            chip_payload["ApIsolate_5G"] = ap.get("ApIsolate", "0")
-                            chip_payload["AuthMode_5G"] = ap.get("AuthMode", "")
-                            chip_payload["EncrypType_5G"] = ap.get("EncrypType", "")
-                
-                if is_merged:
-                    val = "0" if broadcast_merged else "1"
-                    chip_payload["ApBroadcastDisabled"] = val
-                    chip_payload["ApBroadcastDisabled_5G"] = val
-                else:
-                    chip_payload["ApBroadcastDisabled"] = "0" if broadcast_24g else "1"
-                    chip_payload["ApBroadcastDisabled_5G"] = "0" if broadcast_5g else "1"
-
-                await self._post_cmd_unlocked("setAccessPointInfo_24G_5G_ALL", chip_payload)
-                return True
-        except Exception as e:
-            logger.error(f"下发 SSID 广播状态时断网 (预期现象): {e}")
             return True
 
     async def apply_wifi_detail(self, is_merged: bool, detail_24g: Dict, detail_5g: Dict, sync_to_5g: bool = False) -> bool:
@@ -645,7 +735,14 @@ class MU5001Client:
             return False
 
     # 异步获取并清洗实时状态数据
-    async def get_realtime_status(self) -> RealtimeStatus:
+    def invalidate_device_list_cache(self):
+        # 强制下次实时刷新重新拉取设备列表/黑名单（拉黑、手动刷新等场景）
+        self._last_station_fetch = 0.0
+        self._last_lan_fetch = 0.0
+        self._last_blacklist_fetch = 0.0
+
+    async def get_realtime_status(self, force_device_lists: bool = False) -> RealtimeStatus:
+        # force_device_lists=True：忽略降频缓存，立刻拉 station/lan/黑名单（手动刷新、拉黑后）
         cmd = (
             "battery_value,battery_charging,network_type,wan_ipaddr,imei,imsi,sim_imsi,Z5g_rsrp,Z5g_SINR,"
             "nr5g_pci,nr5g_action_channel,pm_sensor_mdm,battery_temp,pm_sensor_pa1,"
@@ -655,16 +752,37 @@ class MU5001Client:
             "nr5g_cell_id,network_provider,realtime_time,lte_rsrq,Z5g_rsrq,lte_rssi,"
             "Z5g_rssi,nr5g_rssi,ppp_status,mcc_mnc" 
         )
+        # 状态字段始终按 AUTO_REFRESH_INTERVAL 拉取（约 1s）
         res = await self.get_cmd(cmd, multi_data=True)
         
+        now = time.monotonic()
+        # WiFi 设备列表：约 3 秒一次
+        if force_device_lists or (now - self._last_station_fetch) >= STATION_LIST_REFRESH_INTERVAL:
+            try:
+                wifi_res = await self.get_cmd("station_list")
+                raw = wifi_res.get("station_list", [])
+                self._station_cache = raw if isinstance(raw, list) else []
+                self._last_station_fetch = now
+            except Exception as ex:
+                logger.debug(f"拉取 station_list 失败，沿用缓存: {ex}")
+        # 有线设备列表：约 5 秒一次
+        if force_device_lists or (now - self._last_lan_fetch) >= LAN_STATION_LIST_REFRESH_INTERVAL:
+            try:
+                lan_res = await self.get_cmd("lan_station_list")
+                raw = lan_res.get("lan_station_list", [])
+                self._lan_cache = raw if isinstance(raw, list) else []
+                self._last_lan_fetch = now
+            except Exception as ex:
+                logger.debug(f"拉取 lan_station_list 失败，沿用缓存: {ex}")
+
         macs_count = 0
         connected_devices = []
         blacklisted_devices = []
         macs = set()
         try:
-            wifi_res = await self.get_cmd("station_list")
-            lan_res = await self.get_cmd("lan_station_list")
-            for d in wifi_res.get("station_list", []) + lan_res.get("lan_station_list", []):
+            for d in list(self._station_cache) + list(self._lan_cache):
+                if not isinstance(d, dict):
+                    continue
                 mac = d.get("mac_addr", "").strip().upper()
                 if mac and mac not in macs:
                     macs.add(mac)
@@ -673,10 +791,16 @@ class MU5001Client:
                     connected_devices.append({"name": name, "ip": ip, "mac": mac})
         except Exception:
             pass
-        try:
-            blacklisted_devices = await self.get_blacklisted_devices()
-        except Exception:
-            blacklisted_devices = []
+        # 黑名单：约 5 秒一次；强制刷新时立刻更新
+        if force_device_lists or (now - self._last_blacklist_fetch) >= BLACKLIST_REFRESH_INTERVAL:
+            try:
+                self._blacklist_cache = await self.get_blacklisted_devices()
+                self._last_blacklist_fetch = now
+            except Exception as ex:
+                logger.debug(f"拉取黑名单失败，沿用缓存: {ex}")
+                if force_device_lists:
+                    self._blacklist_cache = []
+        blacklisted_devices = list(self._blacklist_cache)
         black_macs = {str(dev.get("mac", "")).upper() for dev in blacklisted_devices}
         macs_count = len(macs - black_macs)
 
@@ -721,6 +845,7 @@ class MU5001Client:
             connected_devices=connected_devices,
             blacklisted_devices=blacklisted_devices
         )
+
     async def login(self, ip: str, password: str) -> bool:
         logger.info(f"开始登录设备: {ip}")
         await self.close()
@@ -785,22 +910,29 @@ class MU5001Client:
                 self.state.password = password
                 logger.info(f"登录成功: {base_url}")
                 return True
+            # 设备明确拒绝：按鉴权失败处理（可清本地密码）
             logger.warning(f"登录被拒，接口返回结果: result={result}")
             await client.aclose()
-            return False
+            raise LoginAuthError("密码错误或账号锁定")
+        except LoginError:
+            # 已分类的登录异常直接上抛，交给 UI 决定是否清凭证
+            raise
         except httpx.TimeoutException:
+            # 超时属于网络问题，不应清本地密码
             logger.error(f"登录超时：无法在 {LOGIN_TIMEOUT} 秒内收到设备响应，请检查信号或设备负载")
             await client.aclose()
-            return False
+            raise LoginNetworkError(f"登录超时（{LOGIN_TIMEOUT}s），请检查设备是否在线")
         except httpx.ConnectError:
+            # 连不上设备同样按网络失败处理
             logger.error(f"登录断开：无法建立到底层地址 {ip} 的连接，设备可能未开机或 IP 错误")
             await client.aclose()
-            return False
+            raise LoginNetworkError("无法连接设备，请检查地址和网络")
         except Exception as e:
             # 对于真正的内部逻辑错误，强制打印完整堆栈，无视 DEBUG_MODE 开关
             logger.error(f"登录发生不可预期的内部逻辑错误: {type(e).__name__}: {e}", exc_info=True)
             await client.aclose()
-            return False
+            # 未知异常按网络/临时故障处理，避免误删本地密码
+            raise LoginNetworkError("登录失败，请稍后重试") from e
 
 # ==========================================
 # UI 工具函数
@@ -1019,14 +1151,20 @@ class LoginView(ft.Container):
                     # 使用 False 触发 error_container 的底色，给用户明显的警示
                     show_toast(self.app_page, "登录成功，开发者模式解锁失败", False)  
                 await self.on_login_success()
-            else:
-                await self.clear_credentials_and_reset(is_error=True)
-                self.login_status.value = "密码错误或账号锁定"
-                self.login_status.color = ft.Colors.ERROR
-                show_toast(self.app_page, "密码错误或账号锁定", False)
+        except LoginAuthError as auth_ex:
+            # 仅设备明确拒绝登录时，才清除本地保存的密码
+            await self.clear_credentials_and_reset(is_error=True)
+            self.login_status.value = str(auth_ex)
+            self.login_status.color = ft.Colors.ERROR
+            show_toast(self.app_page, str(auth_ex), False)
+        except LoginNetworkError as net_ex:
+            # 网络波动/设备未就绪：保留本地密码，避免用户反复输入
+            logger.error(f"登录网络失败: {net_ex}", exc_info=DEBUG_MODE)
+            self.login_status.value = str(net_ex)
+            self.login_status.color = ft.Colors.ERROR
+            show_toast(self.app_page, str(net_ex), False)
         except Exception as e:
             logger.error(f"登录异常，请检查地址和网络: {e}", exc_info=DEBUG_MODE)
-            await self.clear_credentials_and_reset(is_error=True)
             self.login_status.value = "连接失败，请检查地址和网络"
             self.login_status.color = ft.Colors.ERROR
             show_toast(self.app_page, "连接失败，请检查地址和网络", False)
@@ -1508,7 +1646,7 @@ class SettingsCard(ft.Container):
         return False
 
     def update_broadcast_controls(self):
-        # 使用实际生效的广播模式
+        # 按实际生效的双频模式，刷新详细设置区可见性/标题
         mode = self.actual_wifi_mode 
         if hasattr(self, "wifi_detail_5g_section"):
             self.wifi_detail_5g_section.visible = (mode == "separated")
@@ -1526,7 +1664,7 @@ class SettingsCard(ft.Container):
         self.wifi_sleep = create_dropdown("", [ft.dropdown.Option(k, v) for k, v in sleep_opts], "10")
         btn_wifi_sleep = create_button("保存休眠", on_click=self.on_wifi_sleep_save)
 
-        # WiFi 设置 UI (合一/分离单选 + 动态广播复选框)
+        # WiFi 设置 UI (合一/分离单选；广播在下方详细设置中)
         # 提取公共的文字样式，跟随主题的 ON_SURFACE 颜色变化
         lbl_style = ft.TextStyle(color=ft.Colors.ON_SURFACE)
         self.compact_labels = [self.sec_style, lbl_style]
@@ -1553,11 +1691,6 @@ class SettingsCard(ft.Container):
             ], spacing=10, run_spacing=5),
             on_change=self.on_wifi_mode_change
         )
-        
-        # WiFi 广播复选框
-        self.cb_broadcast_merged = create_checkbox(label="WiFi 广播", value=True)
-        self.cb_broadcast_24g = create_checkbox(label="2.4GHz", value=True)
-        self.cb_broadcast_5g = create_checkbox(label="5GHz", value=True)
         
         # 赋默认容器内容，避免首次加载数据前出现 UI 空白和页面跳动
         btn_apply_mode = create_button("保存双频", on_click=self.on_apply_wifi_mode)
@@ -1595,6 +1728,9 @@ class SettingsCard(ft.Container):
         self.wifi_detail_24g_title = self.wifi_detail_24g["title"]
         self.wifi_detail_5g_section = create_detail_controls("5g", "5GHz")
         self.wifi_detail_5g_section.visible = False
+        # 同步到5GHz 开启时：2.4G 的广播/隔离/加密/密码变更实时推到 5G
+        for _key in ["broadcast", "isolate", "auth", "password"]:
+            self.wifi_detail_24g[_key].on_change = lambda e: self.update_wifi_sync_state()
         btn_apply_wifi_detail = create_button("应用WiFi设置", on_click=self.on_apply_wifi_detail, expand=True)
         self.wifi_sync_to_5g = create_checkbox(label="", value=False, on_change=lambda e: self.update_wifi_sync_state())
         self.wifi_sync_to_5g_row = make_checkbox_line(self.wifi_sync_to_5g, "同步到5GHz")
@@ -1811,10 +1947,6 @@ class SettingsCard(ft.Container):
             for item in grid.controls:
                 item.width = item_width
 
-        for cb in [getattr(self, "cb_broadcast_merged", None), getattr(self, "cb_broadcast_24g", None), getattr(self, "cb_broadcast_5g", None)]:
-            if cb:
-                cb.label_style = option_label_style
-
         radio_content = getattr(self.wifi_mode, "content", None)
         if radio_content:
             for item in getattr(radio_content, "controls", []):
@@ -1952,23 +2084,16 @@ class SettingsCard(ft.Container):
             for val, cb in self.wifi_coverage_cbs.items():
                 cb.value = (val == cov_val)
 
-        # WiFi 频段及广播状态回显
+        # WiFi 频段模式回显（广播状态由下方详细设置控件回显）
         wifi_lbd = str(res.get("wifi_lbd_enable", "")).strip()
-        b_24 = str(res.get("ap_broadcast_24g", "0")).strip()
-        b_5g = str(res.get("ap_broadcast_5g", "0")).strip()
-
-        # ApBroadcastDisabled: 0 代表广播(开启), 1 代表隐藏(关闭)
         if wifi_lbd == "1":
             self.wifi_mode.value = WiFiMode.MERGED
             self.actual_wifi_mode = WiFiMode.MERGED  # 记录真实状态
-            self.cb_broadcast_merged.value = (b_24 == "0") 
         else:
             self.wifi_mode.value = WiFiMode.SEPARATED
             self.actual_wifi_mode = WiFiMode.SEPARATED  # 记录真实状态
-            self.cb_broadcast_24g.value = (b_24 == "0")
-            self.cb_broadcast_5g.value = (b_5g == "0")
-            
-        # 刷新显示状态
+
+        # 刷新双频相关 UI 显示状态
         self.update_broadcast_controls()
 
         def decode_wifi_pwd(value: str) -> str:
@@ -2016,10 +2141,16 @@ class SettingsCard(ft.Container):
         if not self.is_switching_data:
          if is_connected and not self.data_switch.value:
              self.data_switch.value = True
-             self.data_switch.update()  # 局部刷新：只更新小开关动画
+             try:
+                 self.data_switch.update()  # 局部刷新：只更新小开关动画
+             except Exception:
+                 pass
          elif is_disconnected and self.data_switch.value:
              self.data_switch.value = False
-             self.data_switch.update()  # 局部刷新：只更新小开关动画
+             try:
+                 self.data_switch.update()  # 局部刷新：只更新小开关动画
+             except Exception:
+                 pass
     
     # 按钮锁死助手函数
     def _toggle_network_lock(self, disabled: bool):
@@ -2254,7 +2385,8 @@ class SettingsCard(ft.Container):
                         ft.Container(content=ft.TextButton("确认", on_click=confirm_dlg, style=ft.ButtonStyle(color=ft.Colors.PRIMARY)), expand=True, alignment=ft.Alignment(0, 0)),
                     ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=5
                 )
-            )
+            ),
+            on_dismiss=close_dlg  # 点击遮罩等关闭时也从 overlay 移除，避免泄漏
         )
         self.app_page.overlay.append(dlg)
         dlg.open = True
@@ -2267,10 +2399,16 @@ class SettingsCard(ft.Container):
             if key in controls:
                 controls[key].disabled = sync
         if sync and hasattr(self, "wifi_detail_24g"):
+            # 把 2.4G 当前值同步到 5G
             controls["broadcast"].value = self.wifi_detail_24g["broadcast"].value
             controls["isolate"].value = self.wifi_detail_24g["isolate"].value
             controls["auth"].value = self.wifi_detail_24g["auth"].value
             controls["password"].value = self.wifi_detail_24g["password"].value
+        # 立即刷新界面：禁用/同步勾选态、安全模式与密码
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def _read_wifi_detail_controls(self, controls: Dict) -> Dict:
         auth = controls["auth"].value or "WPA2PSK"
@@ -3333,6 +3471,7 @@ class FirewallCard(ft.Container):
         self.set_global_status = set_global_status_cb
         self.current_feature = None
         self.feature_buttons: List[ft.Control] = []
+        self.background_tasks: Set[asyncio.Task] = set()  # 保存后台 Task 强引用
         self.build_ui()
 
     def build_ui(self):
@@ -3748,8 +3887,7 @@ class FirewallCard(ft.Container):
         # 开关即时提交启用/关闭；默认策略仍由“应用”按钮单独提交
         if getattr(self, "_pf_loading", False):
             return
-        import asyncio
-        asyncio.create_task(self._submit_port_filter_enable())
+        spawn_background_task(self, self._submit_port_filter_enable())
 
     def on_pf_policy_change(self, e=None):
         self.pf_action.value = "Accept" if str(self.pf_policy.value or "0") == "1" else "Drop"
@@ -4045,15 +4183,40 @@ class FirewallCard(ft.Container):
             ip_type = str(self.pf_ip_type.value or "ipv4").lower()
             if ip_type not in {"ipv4", "ipv6"}:
                 ip_type = "ipv4"
+            # MAC / IP：有填写才校验，允许留空
+            mac_norm = normalize_mac(self.pf_mac.value or "")
+            if mac_norm is None:
+                show_toast(self.app_page, "MAC 地址格式不正确", False)
+                return
+            sip = (self.pf_sip.value or "").strip()
+            dip = (self.pf_dip.value or "").strip()
+            if sip and not is_valid_ip(sip, ip_type):
+                show_toast(self.app_page, f"源 IP 地址格式不正确（需 {ip_type.upper()}）", False)
+                return
+            if dip and not is_valid_ip(dip, ip_type):
+                show_toast(self.app_page, f"目的 IP 地址格式不正确（需 {ip_type.upper()}）", False)
+                return
+            d_from = (self.pf_dport_start.value or "0").strip() or "0"
+            d_to = (self.pf_dport_end.value or "0").strip() or "0"
+            s_from = (self.pf_sport_start.value or "0").strip() or "0"
+            s_to = (self.pf_sport_end.value or "0").strip() or "0"
+            for label, a, b in (
+                ("目的端口", d_from, d_to),
+                ("源端口", s_from, s_to),
+            ):
+                ok_range, err = is_valid_port_range(a, b, min_port=0, max_port=65535, allow_zero=True)
+                if not ok_range:
+                    show_toast(self.app_page, f"{label}{err}", False)
+                    return
             params = {
                 "ip_version": ip_type,
-                "mac_address": (self.pf_mac.value or "").strip().upper(),
-                "dip_address": (self.pf_dip.value or "").strip(),
-                "sip_address": (self.pf_sip.value or "").strip(),
-                "dFromPort": (self.pf_dport_start.value or "0").strip() or "0",
-                "dToPort": (self.pf_dport_end.value or "0").strip() or "0",
-                "sFromPort": (self.pf_sport_start.value or "0").strip() or "0",
-                "sToPort": (self.pf_sport_end.value or "0").strip() or "0",
+                "mac_address": mac_norm,
+                "dip_address": dip,
+                "sip_address": sip,
+                "dFromPort": str(int(d_from)),
+                "dToPort": str(int(d_to)),
+                "sFromPort": str(int(s_from)),
+                "sToPort": str(int(s_to)),
                 "action": self.pf_action.value or "Drop",
                 "protocol": self.pf_protocol.value or "None",
                 "comment": comment,
@@ -4265,10 +4428,23 @@ class FirewallCard(ft.Container):
             if len(self.fw_rules) >= 20:
                 show_toast(self.app_page, "最多添加 20 条转发规则", False)
                 return
+            ip = (self.fw_ip.value or "").strip()
+            if not ip:
+                show_toast(self.app_page, "请填写 IP 地址", False)
+                return
+            if not is_valid_ipv4(ip):
+                show_toast(self.app_page, "IP 地址格式不正确", False)
+                return
+            p_start = (self.fw_port_start.value or "").strip()
+            p_end = (self.fw_port_end.value or "").strip()
+            ok_range, err = is_valid_port_range(p_start, p_end, min_port=1, max_port=65535)
+            if not ok_range:
+                show_toast(self.app_page, err, False)
+                return
             ok = await self.api_client.post_cmd("FW_FORWARD_ADD", {
-                "ipAddress": (self.fw_ip.value or "").strip(),
-                "portStart": (self.fw_port_start.value or "").strip(),
-                "portEnd": (self.fw_port_end.value or "").strip(),
+                "ipAddress": ip,
+                "portStart": str(int(p_start)),
+                "portEnd": str(int(p_end)),
                 "protocol": self.fw_protocol.value or "TCP&UDP",
                 "comment": (self.fw_comment.value or "").strip(),
             })
@@ -4484,11 +4660,28 @@ class FirewallCard(ft.Container):
                 show_toast(self.app_page, "最多添加 20 条映射规则", False)
                 return
             # 官方抓包添加时固定带 portMapEnabled=1
+            ip = (self.pm_ip.value or "").strip()
+            if not ip:
+                show_toast(self.app_page, "请填写目的 IP 地址", False)
+                return
+            if not is_valid_ipv4(ip):
+                show_toast(self.app_page, "IP 地址格式不正确", False)
+                return
+            from_port = (self.pm_from.value or "").strip()
+            to_port = (self.pm_to.value or "").strip()
+            fp = parse_port(from_port)
+            tp = parse_port(to_port)
+            if fp == -1 or tp == -1 or fp is None or tp is None:
+                show_toast(self.app_page, "端口格式不正确", False)
+                return
+            if fp < 1 or fp > 65000 or tp < 1 or tp > 65000:
+                show_toast(self.app_page, "端口需在 1~65000 之间", False)
+                return
             ok = await self.api_client.post_cmd("ADD_PORT_MAP", {
                 "portMapEnabled": "1",
-                "fromPort": (self.pm_from.value or "").strip(),
-                "ip_address": (self.pm_ip.value or "").strip(),
-                "toPort": (self.pm_to.value or "").strip(),
+                "fromPort": str(fp),
+                "ip_address": ip,
+                "toPort": str(tp),
                 "protocol": self.pm_protocol.value or "TCP&UDP",
                 "comment": (self.pm_comment.value or "").strip(),
             })
@@ -4558,13 +4751,17 @@ class FirewallCard(ft.Container):
             pass
         # 关闭时直接提交；开启时显示输入框，等用户填 IP 后点应用
         if not enabled:
-            asyncio.create_task(self._save_dmz_state())
+            spawn_background_task(self, self._save_dmz_state())
 
     async def _save_dmz_state(self):
         try:
             params = {"DMZEnabled": "1" if self.dmz_enable.value else "0"}
             if self.dmz_enable.value:
-                params["DMZIPAddress"] = (self.dmz_ip.value or "").strip()
+                ip = (self.dmz_ip.value or "").strip()
+                if not ip or not is_valid_ipv4(ip):
+                    show_toast(self.app_page, "DMZ 主机 IP 格式不正确", False)
+                    return
+                params["DMZIPAddress"] = ip
             ok = await self.api_client.post_cmd("DMZ_SETTING", params)
             if ok:
                 show_toast(self.app_page, "DMZ 设置应用成功", True)
@@ -4576,9 +4773,15 @@ class FirewallCard(ft.Container):
             show_toast(self.app_page, "DMZ 设置应用异常", False)
 
     async def on_save_dmz(self, e):
-        if self.dmz_enable.value and not (self.dmz_ip.value or "").strip():
-            show_toast(self.app_page, "请先填写 DMZ 主机 IP", False)
-            return
+        if self.dmz_enable.value:
+            ip = (self.dmz_ip.value or "").strip()
+            if not ip:
+                show_toast(self.app_page, "请先填写 DMZ 主机 IP", False)
+                return
+            if not is_valid_ipv4(ip):
+                show_toast(self.app_page, "DMZ 主机 IP 格式不正确", False)
+                return
+            self.dmz_ip.value = ip
         await self._save_dmz_state()
 
     async def on_sys_security_change(self, e=None):
@@ -4707,6 +4910,7 @@ class RouterCard(ft.Container):
         self.bind_mode = False  # True = MAC-IP bind subpage
         self.bind_rules = []
         self.bind_rule_checks = {}
+        self.background_tasks: Set[asyncio.Task] = set()  # 保存后台 Task 强引用
         self.build_ui()
 
     def _make_switch(self, on_change=None) -> ft.Switch:
@@ -4875,7 +5079,7 @@ class RouterCard(ft.Container):
                 self.update()
             except Exception:
                 pass
-            asyncio.create_task(self._dhcp_toggle_after_disconnect(target))
+            spawn_background_task(self, self._dhcp_toggle_after_disconnect(target))
             return
         self._sync_visibility()
         try:
@@ -4906,7 +5110,7 @@ class RouterCard(ft.Container):
             pass
         if self.is_switching_data:
             return
-        asyncio.create_task(self._apply_bridge_enable())
+        spawn_background_task(self, self._apply_bridge_enable())
 
     def on_bridge_bind_change(self, e=None):
         self._sync_visibility()
@@ -5121,10 +5325,10 @@ class RouterCard(ft.Container):
         if getattr(self, "_nat_busy", False):
             return
         self._nat_busy = True
+        # 乐观 UI：保持用户拨动后的状态，请求期间禁用开关；失败再回滚
         target_on = bool(self.nat_enable.value)
-        # 先回到旧值，等结果
         old_val = not target_on
-        self.nat_enable.value = old_val
+        self.nat_enable.disabled = True
         try:
             self.nat_enable.update()
         except Exception:
@@ -5141,36 +5345,33 @@ class RouterCard(ft.Container):
                 self.nat_enable.value = old_val
                 show_toast(self.app_page, "NAT 更新失败", False)
                 self.set_global_status("NAT 更新失败", ft.Colors.ERROR)
-            try:
-                self.nat_enable.update()
-            except Exception:
-                pass
         except Exception as ex:
             self.nat_enable.value = old_val
             logger.error(f"NAT toggle error: {ex}", exc_info=DEBUG_MODE)
             show_toast(self.app_page, "NAT 更新异常", False)
             self.set_global_status("NAT 更新异常", ft.Colors.ERROR)
+        finally:
+            self.nat_enable.disabled = False
+            self._nat_busy = False
             try:
                 self.nat_enable.update()
             except Exception:
                 pass
-        finally:
-            self._nat_busy = False
 
     async def _apply_bridge_enable(self):
         if getattr(self, "_bridge_busy", False):
             return
         self._bridge_busy = True
+        # 乐观 UI：保持用户拨动后的状态，请求期间禁用开关；失败再回滚
         target_on = bool(self.bridge_enable.value)
         old_val = not target_on
-        # 视觉先回滚，成功后再设
-        self.bridge_enable.value = old_val
+        action = "开启" if target_on else "关闭"
+        self.bridge_enable.disabled = True
         self._sync_visibility()
         try:
             self.update()
         except Exception:
             pass
-        action = "开启" if target_on else "关闭"
         self.set_global_status(f"正在{action}桥模式...", ft.Colors.ON_SURFACE)
         try:
             params = {"ip_passthrough_enabled": "1" if target_on else "0"}
@@ -5181,12 +5382,7 @@ class RouterCard(ft.Container):
                     mac = (self.bridge_mac.value or "").strip()
                     if not mac:
                         show_toast(self.app_page, "WLAN 绑定请填写 MAC 地址", False)
-                        self.bridge_enable.value = False
-                        self._sync_visibility()
-                        try:
-                            self.update()
-                        except Exception:
-                            pass
+                        self.bridge_enable.value = old_val
                         return
                     form_enable = f"1,{bind},{mac}"
                 params["bridge_wan_port_form_enable"] = form_enable
@@ -5200,23 +5396,19 @@ class RouterCard(ft.Container):
                 self.bridge_enable.value = old_val
                 show_toast(self.app_page, f"桥模式{action}失败", False)
                 self.set_global_status(f"桥模式{action}失败", ft.Colors.ERROR)
-            self._sync_visibility()
-            try:
-                self.update()
-            except Exception:
-                pass
         except Exception as ex:
             self.bridge_enable.value = old_val
             logger.error(f"bridge toggle error: {ex}", exc_info=DEBUG_MODE)
             show_toast(self.app_page, f"桥模式{action}异常", False)
             self.set_global_status(f"桥模式{action}异常", ft.Colors.ERROR)
+        finally:
+            self.bridge_enable.disabled = False
+            self._bridge_busy = False
             self._sync_visibility()
             try:
                 self.update()
             except Exception:
                 pass
-        finally:
-            self._bridge_busy = False
 
     async def on_save_bridge(self, e=None):
         # 应用只管理绑定方式（桥模式需已开启）
@@ -5312,7 +5504,7 @@ class RouterCard(ft.Container):
             self.update()
         except Exception:
             pass
-        asyncio.create_task(self._apply_bind_enable(target))
+        spawn_background_task(self, self._apply_bind_enable(target))
 
     async def _apply_bind_enable(self, target_on: bool):
         if getattr(self, "_bind_busy", False):
@@ -5512,10 +5704,17 @@ class RouterCard(ft.Container):
         if not self.bind_enable.value:
             show_toast(self.app_page, "请先启用 MAC-IP 绑定", False)
             return
-        mac = (self.bind_mac.value or "").strip()
+        mac_raw = (self.bind_mac.value or "").strip()
         ip = (self.bind_ip.value or "").strip()
-        if not mac or not ip:
+        if not mac_raw or not ip:
             show_toast(self.app_page, "请填写 MAC 和 IP 地址", False)
+            return
+        mac = normalize_mac(mac_raw)
+        if mac is None or not mac:
+            show_toast(self.app_page, "MAC 地址格式不正确", False)
+            return
+        if not is_valid_ipv4(ip):
+            show_toast(self.app_page, "IP 地址格式不正确", False)
             return
         self.set_global_status("正在添加 MAC-IP 绑定...", ft.Colors.ON_SURFACE)
         try:
@@ -5588,7 +5787,7 @@ class RouterCard(ft.Container):
         self.txt_hint.size = 9 if is_ultra_small else (11 if is_small else 12)
         if hasattr(self, "txt_hint_top"):
             self.txt_hint_top.size = 9 if is_ultra_small else (11 if is_small else 12)
-        # NAT/????????????????
+        # NAT/桥接/绑定提示文字字号
         tip_size = 9 if is_ultra_small else (11 if is_small else 12)
         if hasattr(self, "txt_nat_tip"):
             self.txt_nat_tip.size = tip_size
@@ -5628,7 +5827,7 @@ class RouterCard(ft.Container):
         self.padding = 8 if is_ultra_small else (12 if is_small else 15)
         self.border_radius = 8 if is_ultra_small else (10 if is_small else 12)
         self.content.spacing = 8 if is_ultra_small else (10 if is_small else 12)
-        # ????????????????????
+        # 布局变化或字号变化时重绘规则卡片
         if getattr(self, "bind_rules", None) is not None:
             self._render_bind_rules()
         try:
@@ -5672,6 +5871,7 @@ class MU5001:
         self.tool_item_texts: List[ft.Text] = []
         self.prefs = None
         self._resize_task = None
+        self.background_tasks: Set[asyncio.Task] = set()  # 零散后台任务的强引用集合
         
         # 网络连接状态变量
         self.offline_count = 0
@@ -5819,7 +6019,7 @@ class MU5001:
             if self.firewall_card.current_feature is None:
                 self.firewall_card.show_menu()
             else:
-                asyncio.create_task(self.firewall_card.show_feature(self.firewall_card.current_feature))
+                spawn_background_task(self, self.firewall_card.show_feature(self.firewall_card.current_feature))
         self.view_toolbox.update()
 
     def show_router_settings(self, e=None):
@@ -5832,7 +6032,7 @@ class MU5001:
             self.firewall_card.visible = False
         if hasattr(self, "router_card"):
             self.router_card.visible = True
-            asyncio.create_task(self.router_card.load())
+            spawn_background_task(self, self.router_card.load())
         self.view_toolbox.update()
     def show_disconnected_ui(self):
         if hasattr(self, "disconnect_text"):
@@ -6081,10 +6281,10 @@ class MU5001:
             show_toast(self.page, "设备重启失败", False)
 
     def on_block_device(self, dev: dict):
-        asyncio.create_task(self._block_device(dev))
+        spawn_background_task(self, self._block_device(dev))
 
     def on_unblock_device(self, dev: dict):
-        asyncio.create_task(self._unblock_device(dev))
+        spawn_background_task(self, self._unblock_device(dev))
 
     async def _block_device(self, dev: dict):
         mac = str(dev.get("mac", "")).strip().upper()
@@ -6097,7 +6297,8 @@ class MU5001:
             ok = await self.client.block_device(mac, name)
             if ok:
                 self.device_list_card._last_data_hash.clear()
-                await self.fetch_realtime()
+                self.client.invalidate_device_list_cache()
+                await self.fetch_realtime(force_device_lists=True)
                 show_toast(self.page, "设备已拉黑", True)
             else:
                 show_toast(self.page, "拉黑失败", False)
@@ -6115,7 +6316,8 @@ class MU5001:
             ok = await self.client.unblock_device(mac)
             if ok:
                 self.device_list_card._last_data_hash.clear()
-                await self.fetch_realtime()
+                self.client.invalidate_device_list_cache()
+                await self.fetch_realtime(force_device_lists=True)
                 show_toast(self.page, "已解除拉黑", True)
             else:
                 show_toast(self.page, "解除失败", False)
@@ -6221,12 +6423,12 @@ class MU5001:
                     self.is_refreshing = False
         except asyncio.CancelledError:
             logger.info("自动刷新任务已停止")
-    async def fetch_realtime(self):
+    async def fetch_realtime(self, force_device_lists: bool = False):
         if not self.device_state.client:
             return False
         try:
-            # 拿到强类型数据对象
-            status = await self.client.get_realtime_status()
+            # 拿到强类型数据对象；force_device_lists 时立刻刷新设备列表
+            status = await self.client.get_realtime_status(force_device_lists=force_device_lists)
             
             # 精准识别“掉线”
             # 如果核心字段（IMSI、主板温度）同时为空，说明凭证已失效
@@ -6316,8 +6518,8 @@ class MU5001:
             try:
                 cov_res = await self.client.get_cmd("queryWiFiCoverage")
                 res["WiFiCoverage"] = cov_res.get("WiFiCoverage", "")
-            except Exception as e:
-                logger.error(f"读取 WiFi 覆盖范围失败: {e}")
+            except Exception as ex:
+                logger.error(f"读取 WiFi 覆盖范围失败: {ex}")
 
             try:
                 # 请求多个字段必须带上 multi_data=True
@@ -6357,8 +6559,8 @@ class MU5001:
                         res.update(useful_probe)
                 except Exception as probe_ex:
                     logger.debug(f"APN 探测字段请求失败: {probe_ex}")
-            except Exception as e:
-                logger.error(f"APN 数据请求失败: {e}")
+            except Exception as ex:
+                logger.error(f"APN 数据请求失败: {ex}")
 
             current_net_mode = str(net_res.get(API_KEY_READ, "")).strip().upper()
             
@@ -6375,8 +6577,10 @@ class MU5001:
             self.status_card.set_global_status("数据读取成功" + dev_status, ft.Colors.PRIMARY if self.device_state.dev_unlocked else ft.Colors.ERROR)
             
             realtime_ok = False
+            # 手动/全量刷新：强制拉取设备列表，不受 3s/5s 降频限制
+            self.client.invalidate_device_list_cache()
             for _ in range(OFFLINE_FAIL_THRESHOLD):
-                if await self.fetch_realtime():
+                if await self.fetch_realtime(force_device_lists=True):
                     realtime_ok = True
                     break
                 await asyncio.sleep(0.5)
@@ -6464,9 +6668,13 @@ class MU5001:
                 
                 # 重登和全量刷新顺利完成后，重新启动后台刷新任务
                 self.start_auto_refresh()
-            else:
-                self.status_card.set_global_status("重新登录失败，可能密码已修改或被锁定", ft.Colors.ERROR)
-                show_toast(self.page, "重登失败", False)
+        except LoginAuthError as auth_ex:
+            # 重登页不主动删本地存储密码；仅提示可能被改密/锁定
+            self.status_card.set_global_status(str(auth_ex), ft.Colors.ERROR)
+            show_toast(self.page, str(auth_ex), False)
+        except LoginNetworkError as net_ex:
+            self.status_card.set_global_status(str(net_ex), ft.Colors.ERROR)
+            show_toast(self.page, str(net_ex), False)
         except Exception as ex: # 注意这里用了 ex 防止和参数 e 冲突
             logger.error(f"重新登录异常: {ex}", exc_info=DEBUG_MODE)
             self.status_card.set_global_status("重登失败，请检查网络", ft.Colors.ERROR)

@@ -123,6 +123,130 @@ LTE_BANDS = ["1","3","4","5","7","8","12","17","34","39","40","41"]
 NR_SA_BANDS = ["1","3","28","41","78"]
 NR_NSA_BANDS = ["28","41","78"]
 
+
+# WiFi 高级设置（对齐官方 wifi_advance / setWiFiChipAdvancedInfo24G_5G）
+# 精简为国家码集合：覆盖全部 2.4G/5G 可用信道号，并保留中国与港澳台
+WIFI_COUNTRIES = [
+    ('CN', '中国'),
+    ('TW', '中国台湾'),
+    ('MO', '中国澳门'),
+    ('HK', '中国香港'),
+    ('US', '美国'),
+]
+# 显示顺序：中国 / 中国台湾 / 中国澳门 / 中国香港 / 美国
+_WIFI_TOP_COUNTRY_CODES = ("CN", "TW", "MO", "HK", "US")
+_WIFI_TOP = [item for code in _WIFI_TOP_COUNTRY_CODES for item in WIFI_COUNTRIES if item[0] == code]
+_WIFI_REST = sorted(
+    [item for item in WIFI_COUNTRIES if item[0] not in _WIFI_TOP_COUNTRY_CODES],
+    key=lambda item: (item[1] or item[0]).casefold(),
+)
+WIFI_COUNTRIES = _WIFI_TOP + _WIFI_REST
+
+WIFI_MAX_STATION_OPTIONS = [str(i) for i in range(1, 33)]
+WIFI_MODE_24G = [
+    ("4", "802.11 b/g/n"),
+    ("7", "802.11 b/g/n/ax"),
+]
+WIFI_MODE_5G = [
+    ("5", "仅 802.11 a"),
+    ("2", "仅 802.11 n"),
+    ("4", "802.11 a/n"),
+    ("6", "802.11 a/n/ac"),
+    ("8", "802.11 a/n/ac/ax"),
+]
+WIFI_BW_24G = [
+    ("0", "20MHz"),
+    ("2", "40MHz"),
+    ("1", "20/40MHz"),
+]
+WIFI_BW_5G = [
+    ("0", "20MHz"),
+    ("1", "20/40MHz"),
+    ("4", "20/40/80MHz"),
+]
+
+
+def wifi_bw_24g_options(mode: str = "7"):
+    # 对齐官方 h()：mode 2/4/7 有 20/40/20+40，否则仅 20MHz
+    m = str(mode or "")
+    if m in {"2", "4", "7"}:
+        return list(WIFI_BW_24G)
+    return [item for item in WIFI_BW_24G if item[0] == "0"]
+
+
+def wifi_bw_5g_options(mode: str = "8"):
+    # 对齐官方 p()：2/4 -> 20+20/40；6/8 -> 再加 80；其它仅 20
+    m = str(mode or "")
+    if m in {"6", "8"}:
+        return list(WIFI_BW_5G)
+    if m in {"2", "4"}:
+        return [item for item in WIFI_BW_5G if item[0] in {"0", "1"}]
+    return [item for item in WIFI_BW_5G if item[0] == "0"]
+
+
+# 官方 countryCodeType（仅保留下拉使用的 5 国）：fcca=1(1~11)，world=3(1~13)
+WIFI_COUNTRY_2G_TYPE = {
+    "CN": "3",
+    "HK": "3",
+    "MO": "3",
+    "TW": "1",
+    "US": "1",
+}
+
+# 5G 信道（仅保留下拉使用的 5 国，对齐官方 countryCode_5g）
+WIFI_5G_CHANNELS_BY_COUNTRY = {
+    "CN": [149, 153, 157, 161, 165],
+    "HK": [36, 40, 44, 48, 149, 153, 157, 161, 165],
+    "MO": [149, 153, 157, 161],
+    "TW": [149, 153, 157, 161, 165],
+    "US": [36, 40, 44, 48, 149, 153, 157, 161, 165],
+}
+
+
+def wifi_channel_24g_list(country_code: str = "CN"):
+    # 对齐官方 c()/b()：按国家区域类型生成 2.4G 信道号列表
+    code = (country_code or "CN").upper()
+    ctype = WIFI_COUNTRY_2G_TYPE.get(code, "0")
+    if ctype == "3":
+        return list(range(1, 14))  # 1~13（CN/HK 等）
+    if ctype == "7":
+        # 官方 case 7 为特殊列表；当前机型 apld 为空，保底 1~13
+        return list(range(1, 14))
+    # fcca=1 及未知：1~11（如 TW/US）
+    return list(range(1, 12))
+
+
+def wifi_channel_24g_options(country_code: str = "CN"):
+    opts = [("0", "自动")]
+    for ch in wifi_channel_24g_list(country_code):
+        opts.append((str(ch), f"{2407 + 5 * ch}MHz (信道 {ch})"))
+    return opts
+
+
+def wifi_channel_5g_options(country_code: str = "CN"):
+    # 返回 (key, 完整文案)；有官方表用官方，无官方仅保留「自动」
+    code = (country_code or "CN").upper()
+    channels = WIFI_5G_CHANNELS_BY_COUNTRY.get(code) or []
+    opts = [("0", "自动")]
+    for ch in channels:
+        mhz = 5000 + 5 * ch
+        opts.append((str(ch), f"{mhz}MHz (信道 {ch})"))
+    return opts
+
+def make_wifi_channel_option(key: str, full_text: str):
+    # 下拉列表显示 full_text，选中后输入框显示短文案（自动/数字）
+    short = "自动" if str(key) == "0" else str(key)
+    return ft.dropdown.Option(
+        key=str(key),
+        text=short,
+        content=ft.Text(full_text or short, color=ft.Colors.ON_SURFACE),
+    )
+
+
+def wifi_channel_dropdown_options(pairs):
+    return [make_wifi_channel_option(k, t) for k, t in pairs]
+
+
 # 设备默认参数
 DEFAULT_IP = "192.168.0.1"
 API_KEY_WRITE = "BearerPreference"  # 写入网络模式的字段名
@@ -497,6 +621,52 @@ class MU5001Client:
     async def set_wifi_coverage(self, coverage_val: str) -> bool:
         return await self.post_cmd("setWiFiCoverage", {"WiFiCoverage": coverage_val})
 
+    # 异步设置 WiFi 高级参数（国家/接入数/模式/带宽/信道）
+    async def apply_wifi_advance(
+        self,
+        country: str,
+        max_station: str,
+        mode_24g: str,
+        bw_24g: str,
+        channel_24g: str,
+        mode_5g: str,
+        bw_5g: str,
+        channel_5g: str,
+    ) -> bool:
+        # 官方 goformId=setWiFiChipAdvancedInfo24G_5G，ChipIndex=8 表示双芯片一次性下发
+        def norm_channel(val: str) -> str:
+            raw = (val or "0").strip()
+            if not raw or raw == "0":
+                return "0"
+            # 兼容 "149_5745" 与 "149"
+            return raw.split("_")[0]
+
+        payload = {
+            "ChipIndex": "8",
+            "WirelessMode": str(mode_24g or "7"),
+            "CountryCode": str(country or "CN").upper(),
+            "Channel": norm_channel(channel_24g),
+            "BandWidth": str(bw_24g or "1"),
+            "Band": "b",
+            "WirelessMode_5G": str(mode_5g or "8"),
+            "CountryCode_5G": str(country or "CN").upper(),
+            "Channel_5G": norm_channel(channel_5g),
+            "BandWidth_5G": str(bw_5g or "4"),
+            "Band_5G": "a",
+            "ApMaxStationNumber": str(max_station or "32"),
+            "abg_rate": "0",
+        }
+        try:
+            return await self.post_cmd("setWiFiChipAdvancedInfo24G_5G", payload)
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as e:
+            # WiFi 重启可能导致短暂断网：仅网络类异常按“可能已生效”处理
+            logger.warning(f"下发 WiFi 高级设置时断网 (预期现象): {type(e).__name__}: {e}")
+            return True
+        except Exception as e:
+            logger.error(f"下发 WiFi 高级设置失败: {type(e).__name__}: {e}", exc_info=DEBUG_MODE)
+            return False
+
+
     # 设备列表
     async def get_device_access_control_list(self) -> Dict:
         try:
@@ -702,6 +872,31 @@ class MU5001Client:
                 return True
         except Exception as e:
             logger.error(f"切换网络模式异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+
+    # 读取接入模式（官方 App: opms_wan_mode / opms_wan_auto_mode）
+    async def get_access_mode(self) -> Dict:
+        try:
+            return await self.get_cmd(
+                "opms_wan_mode,opms_wan_auto_mode,ppp_status",
+                multi_data=True,
+            )
+        except Exception as e:
+            logger.error(f"读取接入模式异常: {e}", exc_info=DEBUG_MODE)
+            return {}
+
+    # 设置接入模式。抓包: goformId=OPERATION_MODE&opMode=AUTO|PPPOE|PPP|MULTIWAN
+    # 调用方需保证数据连接已断开
+    async def set_access_mode(self, op_mode: str) -> bool:
+        mode = str(op_mode or "").strip().upper()
+        if mode not in ("AUTO", "PPPOE", "PPP", "MULTIWAN"):
+            logger.error(f"非法接入模式: {op_mode}")
+            return False
+        try:
+            return await self.post_cmd("OPERATION_MODE", {"opMode": mode})
+        except Exception as e:
+            logger.error(f"切换接入模式异常: {e}", exc_info=DEBUG_MODE)
             return False
 
     # 获取设备 LD 值（登录密码加密盐），失败返回空串
@@ -1664,7 +1859,7 @@ class SettingsCard(ft.Container):
         self.wifi_sleep = create_dropdown("", [ft.dropdown.Option(k, v) for k, v in sleep_opts], "10")
         btn_wifi_sleep = create_button("保存休眠", on_click=self.on_wifi_sleep_save)
 
-        # WiFi 设置 UI (合一/分离单选；广播在下方详细设置中)
+        # WiFi 设置 UI (合一/分离单选)
         # 提取公共的文字样式，跟随主题的 ON_SURFACE 颜色变化
         lbl_style = ft.TextStyle(color=ft.Colors.ON_SURFACE)
         self.compact_labels = [self.sec_style, lbl_style]
@@ -1728,7 +1923,7 @@ class SettingsCard(ft.Container):
         self.wifi_detail_24g_title = self.wifi_detail_24g["title"]
         self.wifi_detail_5g_section = create_detail_controls("5g", "5GHz")
         self.wifi_detail_5g_section.visible = False
-        # 同步到5GHz 开启时：2.4G 的广播/隔离/加密/密码变更实时推到 5G
+        # 同步到5GHz 开启时：2.4G 的广播/隔离/加密/密码变更实时同步 5G
         for _key in ["broadcast", "isolate", "auth", "password"]:
             self.wifi_detail_24g[_key].on_change = lambda e: self.update_wifi_sync_state()
         btn_apply_wifi_detail = create_button("应用WiFi设置", on_click=self.on_apply_wifi_detail, expand=True)
@@ -1742,6 +1937,71 @@ class SettingsCard(ft.Container):
             self.wifi_detail_5g_section,
             btn_apply_wifi_detail
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+
+
+        # WiFi 高级设置（国家 / 最大接入数 / 2.4G & 5G 模式带宽信道）
+        def _opts(pairs):
+            return [ft.dropdown.Option(k, t) for k, t in pairs]
+
+        # 仅长列表限制菜单高度；短列表不设 menu_height，避免大片空白
+        self.wifi_country = create_dropdown(
+            "国家/地区码",
+            _opts(WIFI_COUNTRIES),
+            "CN",
+            expand=True,
+        )
+        self.wifi_country.on_select = self.on_wifi_country_change
+        self.wifi_max_station = create_dropdown(
+            "最大接入数",
+            [ft.dropdown.Option(x, x) for x in WIFI_MAX_STATION_OPTIONS],
+            "32",
+            expand=True,
+            menu_height=300,
+        )
+        self.wifi_mode_24g = create_dropdown("网络模式", _opts(WIFI_MODE_24G), "7", expand=True)
+        self.wifi_bw_24g = create_dropdown("频带宽度", _opts(wifi_bw_24g_options("7")), "1", expand=True)
+        self.wifi_channel_24g = create_dropdown(
+            "信道",
+            wifi_channel_dropdown_options(wifi_channel_24g_options("CN")),
+            "0",
+            expand=True,
+            menu_height=300,
+        )
+        self.wifi_mode_5g = create_dropdown("网络模式", _opts(WIFI_MODE_5G), "8", expand=True)
+        self.wifi_bw_5g = create_dropdown("频带宽度", _opts(wifi_bw_5g_options("8")), "4", expand=True)
+        self.wifi_channel_5g = create_dropdown(
+            "信道",
+            wifi_channel_dropdown_options(wifi_channel_5g_options("CN")),
+            "0",
+            expand=True,
+        )
+        # Flet 0.85+ Dropdown 只有 on_select，没有 on_change
+        self.wifi_mode_24g.on_select = self.on_wifi_mode_24g_change
+        self.wifi_mode_5g.on_select = self.on_wifi_mode_5g_change
+        # 选中后强制输入框只显示短文案（1 / 自动），列表仍用完整频率信息
+        self.wifi_channel_24g.on_select = self.on_wifi_channel_select
+        self.wifi_channel_5g.on_select = self.on_wifi_channel_select
+        self._sync_wifi_channel_display(self.wifi_channel_24g)
+        self._sync_wifi_channel_display(self.wifi_channel_5g)
+        btn_wifi_advance_apply = create_button("应用高级设置", on_click=self.on_apply_wifi_advance, expand=True)
+
+        wifi_advance_container = ft.Column([
+            ft.Text("WiFi 高级设置", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
+            ft.Text("国家", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
+            self.wifi_country,
+            ft.Text("最大接入数", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
+            self.wifi_max_station,
+            ft.Text("2.4GHz", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
+            self.wifi_mode_24g,
+            self.wifi_bw_24g,
+            self.wifi_channel_24g,
+            ft.Text("5GHz", size=13, weight=ft.FontWeight.W_500, color=ft.Colors.ON_SURFACE),
+            self.wifi_mode_5g,
+            self.wifi_bw_5g,
+            self.wifi_channel_5g,
+            btn_wifi_advance_apply,
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+
 
         btn_wifi_radio_apply = ft.Container(height=0)
         
@@ -1807,7 +2067,10 @@ class SettingsCard(ft.Container):
         self.compact_inputs = [
             self.wifi_sleep, self.cell_pci, self.cell_earfcn, self.cell_band, self.cell_scs,
             self.wifi_detail_24g["ssid"], self.wifi_detail_24g["auth"], self.wifi_detail_24g["password"],
-            self.wifi_detail_5g["ssid"], self.wifi_detail_5g["auth"], self.wifi_detail_5g["password"]
+            self.wifi_detail_5g["ssid"], self.wifi_detail_5g["auth"], self.wifi_detail_5g["password"],
+            self.wifi_country, self.wifi_max_station,
+            self.wifi_mode_24g, self.wifi_bw_24g, self.wifi_channel_24g,
+            self.wifi_mode_5g, self.wifi_bw_5g, self.wifi_channel_5g,
         ]
        
         # 采用 ResponsiveRow 自动处理排版
@@ -1837,7 +2100,7 @@ class SettingsCard(ft.Container):
         btn_cell_unlock = create_button("清除锁定", on_click=self.on_cell_unlock, expand=True)
         btn_cell_reboot = create_button("重启设备", on_click=self.on_reboot_device, expand=True)
         self.compact_buttons = [
-            btn_wifi_sleep, btn_apply_mode, btn_apply_wifi_detail, btn_wifi_coverage_apply,
+            btn_wifi_sleep, btn_apply_mode, btn_apply_wifi_detail, btn_wifi_advance_apply, btn_wifi_coverage_apply,
             self.btn_net_mode_apply, btn_lte_apply, btn_sa_apply, btn_nsa_apply,
             btn_cell_apply, btn_cell_unlock, btn_cell_reboot
         ]
@@ -1860,6 +2123,8 @@ class SettingsCard(ft.Container):
                 ], spacing=2),
                 wifi_mode_container, btn_wifi_radio_apply, ft.Container(height=15),
                 wifi_detail_container, ft.Container(height=15),
+
+                wifi_advance_container, ft.Container(height=15),
 
                 ft.Text("WiFi 覆盖范围", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
                 self.wifi_coverage_row, btn_wifi_coverage_apply
@@ -2116,6 +2381,39 @@ class SettingsCard(ft.Container):
             self.wifi_sync_to_5g.value = self._infer_wifi_sync_to_5g(res)
         self.update_broadcast_controls()
 
+        # WiFi 高级设置回显（来自 queryAccessPointInfo 的 2.4G/5G 主 SSID 记录）
+        if hasattr(self, "wifi_country"):
+            d24 = res.get("wifi_detail_24g", {}) or {}
+            d5 = res.get("wifi_detail_5g", {}) or {}
+            country = str(d24.get("CountryCode") or d5.get("CountryCode") or "CN").upper()
+            if any(o.key == country for o in self.wifi_country.options):
+                self.wifi_country.value = country
+            max_st = str(d24.get("ApMaxStationNumber") or d5.get("ApMaxStationNumber") or "32")
+            if any(o.key == max_st for o in self.wifi_max_station.options):
+                self.wifi_max_station.value = max_st
+            mode24 = str(d24.get("WirelessMode") or "7")
+            if any(o.key == mode24 for o in self.wifi_mode_24g.options):
+                self.wifi_mode_24g.value = mode24
+            bw24 = str(d24.get("BandWidth") or "1")
+            self._refresh_wifi_bw_24g_options(mode=self.wifi_mode_24g.value or mode24, preferred=bw24)
+            # 先按国家刷新 2.4G 信道选项再回显
+            self._refresh_wifi_channel_24g_options(country)
+            ch24 = str(d24.get("Channel") or "0").split("_")[0]
+            if any(o.key == ch24 for o in self.wifi_channel_24g.options):
+                self.wifi_channel_24g.value = ch24
+            mode5 = str(d5.get("WirelessMode") or "8")
+            if any(o.key == mode5 for o in self.wifi_mode_5g.options):
+                self.wifi_mode_5g.value = mode5
+            bw5 = str(d5.get("BandWidth") or "4")
+            self._refresh_wifi_bw_5g_options(mode=self.wifi_mode_5g.value or mode5, preferred=bw5)
+            # 按国家刷新 5G 信道选项后再回显
+            self._refresh_wifi_channel_5g_options(country)
+            ch5 = str(d5.get("Channel") or "0").split("_")[0]
+            if any(o.key == ch5 for o in self.wifi_channel_5g.options):
+                self.wifi_channel_5g.value = ch5
+            self._sync_wifi_channel_display(self.wifi_channel_24g)
+            self._sync_wifi_channel_display(self.wifi_channel_5g)
+
         # 网络模式配置
         matched = False
         for name, cfg in NET_CONFIG.items():
@@ -2327,6 +2625,218 @@ class SettingsCard(ft.Container):
             self._toggle_network_lock(False)
             self.update()
 
+
+    def _sync_wifi_channel_display(self, dropdown=None):
+        # 选中后框内只显示短文案：自动 / 信道号
+        dd = dropdown
+        if dd is None:
+            return
+        key = str(getattr(dd, "value", None) or "0")
+        short = "自动" if key == "0" else key
+        try:
+            dd.text = short
+        except Exception:
+            pass
+
+    def on_wifi_channel_select(self, e=None):
+        dd = getattr(e, "control", None) if e is not None else None
+        self._sync_wifi_channel_display(dd)
+        try:
+            if dd is not None:
+                dd.update()
+        except Exception:
+            pass
+
+
+    def _apply_bw_options(self, dropdown, pairs, preferred: str = None, fallback: str = "0"):
+        # 按模式刷新带宽选项；当前值不在新列表时回退到 fallback / 首项
+        pairs = list(pairs or [])
+        dropdown.options = [ft.dropdown.Option(key=str(k), text=str(t)) for k, t in pairs]
+        keys = {str(k) for k, _ in pairs}
+        cur = str(preferred if preferred is not None else (getattr(dropdown, "value", None) or ""))
+        if cur in keys:
+            dropdown.value = cur
+        elif str(fallback) in keys:
+            dropdown.value = str(fallback)
+        elif pairs:
+            dropdown.value = str(pairs[0][0])
+        else:
+            dropdown.value = None
+        try:
+            dropdown.update()
+        except Exception:
+            pass
+
+    def _refresh_wifi_bw_24g_options(self, mode: str = None, preferred: str = None):
+        # 2.4G：网络模式变化后联动频带宽度（对齐官方 channelBandwidths）
+        if not hasattr(self, "wifi_bw_24g"):
+            return
+        mode_val = str(mode if mode is not None else (self.wifi_mode_24g.value or "7"))
+        pairs = wifi_bw_24g_options(mode_val)
+        fallback = "1" if any(k == "1" for k, _ in pairs) else "0"
+        self._apply_bw_options(self.wifi_bw_24g, pairs, preferred=preferred, fallback=fallback)
+
+    def _refresh_wifi_bw_5g_options(self, mode: str = None, preferred: str = None):
+        # 5G：网络模式变化后联动频带宽度（对齐官方 channelBandwidths_5g）
+        if not hasattr(self, "wifi_bw_5g"):
+            return
+        mode_val = str(mode if mode is not None else (self.wifi_mode_5g.value or "8"))
+        pairs = wifi_bw_5g_options(mode_val)
+        if any(k == "4" for k, _ in pairs):
+            fallback = "4"
+        elif any(k == "1" for k, _ in pairs):
+            fallback = "1"
+        else:
+            fallback = "0"
+        self._apply_bw_options(self.wifi_bw_5g, pairs, preferred=preferred, fallback=fallback)
+
+    def on_wifi_mode_24g_change(self, e=None):
+        mode = None
+        if e is not None and getattr(e, "control", None) is not None:
+            mode = getattr(e.control, "value", None)
+            if mode is not None:
+                self.wifi_mode_24g.value = str(mode)
+        self._refresh_wifi_bw_24g_options(mode=mode)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def on_wifi_mode_5g_change(self, e=None):
+        mode = None
+        if e is not None and getattr(e, "control", None) is not None:
+            mode = getattr(e.control, "value", None)
+            if mode is not None:
+                self.wifi_mode_5g.value = str(mode)
+        self._refresh_wifi_bw_5g_options(mode=mode)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _refresh_wifi_channel_24g_options(self, country_code: str = "CN"):
+        # 国家切换后刷新 2.4G 可用信道（对齐官方 generateChannelOption/c）
+        if not hasattr(self, "wifi_channel_24g"):
+            return
+        old = str(self.wifi_channel_24g.value or "0").split("_")[0]
+        opts = wifi_channel_24g_options(country_code)
+        self.wifi_channel_24g.options = wifi_channel_dropdown_options(opts)
+        if any(k == old for k, _ in opts):
+            self.wifi_channel_24g.value = old
+        else:
+            self.wifi_channel_24g.value = "0"
+        self._sync_wifi_channel_display(self.wifi_channel_24g)
+        try:
+            self.wifi_channel_24g.update()
+        except Exception:
+            pass
+
+    def _refresh_wifi_channel_5g_options(self, country_code: str = "CN"):
+        # 国家切换后刷新 5G 可用信道（对齐官方 countryChangeHandler）
+        if not hasattr(self, "wifi_channel_5g"):
+            return
+        old = str(self.wifi_channel_5g.value or "0").split("_")[0]
+        opts = wifi_channel_5g_options(country_code)
+        self.wifi_channel_5g.options = wifi_channel_dropdown_options(opts)
+        if any(k == old for k, _ in opts):
+            self.wifi_channel_5g.value = old
+        else:
+            self.wifi_channel_5g.value = "0"
+        self._sync_wifi_channel_display(self.wifi_channel_5g)
+        try:
+            self.wifi_channel_5g.update()
+        except Exception:
+            pass
+
+    def on_wifi_country_change(self, e=None):
+        if e is not None and getattr(e, "control", None) is not None and getattr(e.control, "value", None) is not None:
+            self.wifi_country.value = str(e.control.value)
+        country = str(getattr(self, "wifi_country", None) and self.wifi_country.value or "CN")
+        # 国家联动 2.4G/5G 信道列表（台湾等 FCC 区 2.4G 仅 1~11，无 12/13）
+        self._refresh_wifi_channel_24g_options(country)
+        self._refresh_wifi_channel_5g_options(country)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    async def on_apply_wifi_advance(self, e=None):
+        # 官方提示：修改高级设置会使 WiFi 短暂断开
+        # Flet 0.85+ 用 show_dialog/pop_dialog 管理弹窗，overlay 方式取消关不掉
+        def close_dlg(ev=None):
+            try:
+                if getattr(dlg, "open", False):
+                    self.app_page.pop_dialog()
+            except Exception:
+                try:
+                    dlg.open = False
+                    dlg.update()
+                except Exception:
+                    pass
+
+        async def confirm_dlg(ev=None):
+            close_dlg(ev)
+            await self._execute_apply_wifi_advance()
+
+        dlg = ft.AlertDialog(
+            bgcolor=ft.Colors.SURFACE,
+            title_padding=ft.Padding(0, 0, 0, 0),
+            content_padding=ft.Padding(0, 0, 0, 0),
+            actions_padding=ft.Padding(0, 0, 0, 0),
+            inset_padding=ft.Padding(10, 24, 10, 24),
+            modal=True,
+            content=ft.Container(
+                height=70,
+                alignment=ft.Alignment(0, 0),
+                padding=ft.Padding(10, 0, 10, 0),
+                content=ft.Row(
+                    controls=[
+                        ft.Container(content=ft.TextButton("取消", on_click=close_dlg, style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT)), expand=True, alignment=ft.Alignment(0, 0)),
+                        ft.Container(content=ft.TextButton("确认", on_click=confirm_dlg, style=ft.ButtonStyle(color=ft.Colors.PRIMARY)), expand=True, alignment=ft.Alignment(0, 0)),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=5,
+                ),
+            ),
+            on_dismiss=close_dlg,
+        )
+        self.app_page.show_dialog(dlg)
+
+    async def _execute_apply_wifi_advance(self):
+        country = str(self.wifi_country.value or "CN").upper()
+        max_station = str(self.wifi_max_station.value or "32")
+        mode_24g = str(self.wifi_mode_24g.value or "7")
+        bw_24g = str(self.wifi_bw_24g.value or "1")
+        channel_24g = str(self.wifi_channel_24g.value or "0")
+        mode_5g = str(self.wifi_mode_5g.value or "8")
+        bw_5g = str(self.wifi_bw_5g.value or "4")
+        channel_5g = str(self.wifi_channel_5g.value or "0")
+        show_toast(self.app_page, "正在应用 WiFi 高级设置...", True)
+        try:
+            self.update()
+        except Exception:
+            pass
+        ok = await self.api_client.apply_wifi_advance(
+            country=country,
+            max_station=max_station,
+            mode_24g=mode_24g,
+            bw_24g=bw_24g,
+            channel_24g=channel_24g,
+            mode_5g=mode_5g,
+            bw_5g=bw_5g,
+            channel_5g=channel_5g,
+        )
+        if ok:
+            self.set_global_status("WiFi 高级设置已保存，WiFi 将重启", ft.Colors.PRIMARY)
+            show_toast(self.app_page, "WiFi 高级设置保存成功", True)
+        else:
+            self.set_global_status("WiFi 高级设置保存失败", ft.Colors.ERROR)
+            show_toast(self.app_page, "WiFi 高级设置保存失败", False)
+        try:
+            self.update()
+        except Exception:
+            pass
+
     # 应用 WiFi 覆盖范围
     async def on_apply_wifi_coverage(self, e):
         selected_val = "short_mode"
@@ -2363,34 +2873,45 @@ class SettingsCard(ft.Container):
         self.update()
 
     async def on_apply_wifi_mode(self, e):
-        async def close_dlg(e):
-            dlg.open = False
-            if dlg in self.app_page.overlay:
-                self.app_page.overlay.remove(dlg) # 彻底销毁弹窗，释放内存
-            self.app_page.update()
-        async def confirm_dlg(e):
-            dlg.open = False
-            if dlg in self.app_page.overlay:
-                self.app_page.overlay.remove(dlg) # 彻底销毁弹窗，释放内存
-            self.app_page.update()
+        # Flet 0.85+ 用 show_dialog/pop_dialog 管理弹窗，overlay 方式取消关不掉
+        def close_dlg(ev=None):
+            try:
+                if getattr(dlg, "open", False):
+                    self.app_page.pop_dialog()
+            except Exception:
+                try:
+                    dlg.open = False
+                    dlg.update()
+                except Exception:
+                    pass
+
+        async def confirm_dlg(ev=None):
+            close_dlg(ev)
             await self._execute_apply_wifi_mode()
-            
+
         dlg = ft.AlertDialog(
-            bgcolor=ft.Colors.SURFACE, title_padding=ft.Padding(0,0,0,0), content_padding=ft.Padding(0,0,0,0), actions_padding=ft.Padding(0,0,0,0), inset_padding=ft.Padding(10, 24, 10, 24),
+            bgcolor=ft.Colors.SURFACE,
+            title_padding=ft.Padding(0, 0, 0, 0),
+            content_padding=ft.Padding(0, 0, 0, 0),
+            actions_padding=ft.Padding(0, 0, 0, 0),
+            inset_padding=ft.Padding(10, 24, 10, 24),
+            modal=True,
             content=ft.Container(
-                height=70, alignment=ft.Alignment(0, 0), padding=ft.Padding(10, 0, 10, 0),
+                height=70,
+                alignment=ft.Alignment(0, 0),
+                padding=ft.Padding(10, 0, 10, 0),
                 content=ft.Row(
                     controls=[
                         ft.Container(content=ft.TextButton("取消", on_click=close_dlg, style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT)), expand=True, alignment=ft.Alignment(0, 0)),
                         ft.Container(content=ft.TextButton("确认", on_click=confirm_dlg, style=ft.ButtonStyle(color=ft.Colors.PRIMARY)), expand=True, alignment=ft.Alignment(0, 0)),
-                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=5
-                )
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=5,
+                ),
             ),
-            on_dismiss=close_dlg  # 点击遮罩等关闭时也从 overlay 移除，避免泄漏
+            on_dismiss=close_dlg,
         )
-        self.app_page.overlay.append(dlg)
-        dlg.open = True
-        self.app_page.update()
+        self.app_page.show_dialog(dlg)
 
     def update_wifi_sync_state(self):
         sync = bool(getattr(self, "wifi_sync_to_5g", None) and self.wifi_sync_to_5g.value and self.actual_wifi_mode == "separated")
@@ -4118,7 +4639,7 @@ class FirewallCard(ft.Container):
                     horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 )
             else:
-                # 大屏：与官方表格一致，横向一行
+                # 大屏：横向一行
                 def cell(title: str, value: str, expand: int = 1) -> ft.Container:
                     return ft.Container(
                         content=ft.Column(
@@ -4893,8 +5414,300 @@ class FirewallCard(ft.Container):
 
 
 
+
+# UI 组件拆分 - 接入模式卡片（OPERATION_MODE）
+# ==========================================
+ACCESS_MODE_OPTIONS = [
+    ("AUTO", "自动模式"),
+    ("PPPOE", "有线宽带"),
+    ("PPP", "无线宽带"),
+    ("MULTIWAN", "聚合模式"),
+]
+
+
+class AccessModeCard(ft.Container):
+    """接入模式：抓包确认 goformId=OPERATION_MODE, opMode=AUTO/PPPOE/PPP/MULTIWAN"""
+
+    def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
+        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12, visible=False)
+        self.app_page = page
+        self.api_client = client
+        self.set_global_status = set_global_status_cb
+        self.is_small_layout = False
+        self.is_ultra_small_layout = False
+        self.is_data_connected = True
+        self.is_switching_data = False
+        self.is_applying = False
+        self._loading = False
+        self.current_mode = "AUTO"
+        self.background_tasks: Set[asyncio.Task] = set()
+        self.build_ui()
+
+    def build_ui(self):
+        self.txt_title = ft.Text("接入模式", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
+        self.txt_hint = ft.Text(
+            "切换接入模式前请先关闭数据连接",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+
+        self.txt_data_label = ft.Text("数据连接", color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.data_switch = ft.Switch(
+            value=True,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_data_switch_change,
+        )
+        self.data_row = ft.Row(
+            [self.data_switch, self.txt_data_label],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+
+        self.txt_mode_label = ft.Text("接入方式", color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.mode_dropdown = create_dropdown(
+            "",
+            [ft.dropdown.Option(k, v) for k, v in ACCESS_MODE_OPTIONS],
+            "AUTO",
+            expand=True,
+        )
+        self.txt_mode_tip = ft.Text(
+            "应用后设备将重启",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.txt_current = ft.Text("当前: --", size=12, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=False)
+        self.btn_apply = create_button("应用", on_click=self.on_apply_mode, expand=True)
+
+        self.content = ft.Column(
+            [
+                self.txt_title,
+                self.txt_hint,
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
+                self.data_row,
+                self.txt_mode_label,
+                self.mode_dropdown,
+                self.txt_mode_tip,
+                self.txt_current,
+                self.btn_apply,
+            ],
+            spacing=12,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+
+    def _mode_label(self, code: str) -> str:
+        code = str(code or "").strip().upper()
+        for k, v in ACCESS_MODE_OPTIONS:
+            if k == code:
+                return v
+        return code or "--"
+
+    def _normalize_mode(self, res: dict) -> str:
+        raw = str(res.get("opms_wan_mode", "") or "").strip().upper()
+        auto = str(res.get("opms_wan_auto_mode", "") or "").strip().upper()
+        if not raw:
+            return self.current_mode or "AUTO"
+        if raw == "AUTO" or raw.startswith("AUTO_"):
+            return "AUTO"
+        if raw in ("PPPOE", "PPP", "MULTIWAN"):
+            return raw
+        if auto.startswith("AUTO") or raw in ("AUTO_LTE_GATEWAY", "AUTO_PPPOE", "AUTO_DHCP", "AUTO_STATIC"):
+            return "AUTO"
+        for k, _ in ACCESS_MODE_OPTIONS:
+            if k == raw:
+                return k
+        return "AUTO"
+
+    def _sync_data_ui(self):
+        self.data_switch.value = self.is_data_connected
+        self.data_switch.disabled = self.is_switching_data or self.is_applying
+        can_edit = (not self.is_data_connected) and (not self.is_switching_data) and (not self.is_applying)
+        self.mode_dropdown.disabled = not can_edit
+        self.btn_apply.disabled = not can_edit
+        # 未点应用时若重新锁定（如打开数据），下拉回退到设备真实模式
+        if not can_edit and self.current_mode:
+            self.mode_dropdown.value = self.current_mode
+
+    def update_realtime(self, status: "RealtimeStatus"):
+        if self.is_switching_data or self.is_applying:
+            return
+        self.is_data_connected = bool(getattr(status, "is_data_connected", False))
+        self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    async def _switch_data_connection(self, target_on: bool) -> bool:
+        if self.is_data_connected == target_on:
+            return True
+        self.is_switching_data = True
+        self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+        action = "开启" if target_on else "关闭"
+        show_toast(self.app_page, f"正在{action}数据连接...", True)
+        try:
+            ok = await self.api_client.set_data_connection(target_on)
+            if ok:
+                self.is_data_connected = target_on
+                self.set_global_status(f"数据连接已{action}", ft.Colors.PRIMARY)
+                show_toast(self.app_page, f"数据连接已{action}", True)
+                # 数据状态变化后，按设备真实接入模式回显（丢弃未应用选择）
+                await self.load(silent=True)
+            else:
+                self.set_global_status(f"数据连接{action}失败", ft.Colors.ERROR)
+                show_toast(self.app_page, f"数据连接{action}失败", False)
+            return ok
+        except Exception as ex:
+            logger.error(f"接入模式页数据连接{action}异常: {ex}", exc_info=DEBUG_MODE)
+            self.set_global_status(f"数据连接{action}异常", ft.Colors.ERROR)
+            show_toast(self.app_page, f"数据连接{action}异常", False)
+            return False
+        finally:
+            self.is_switching_data = False
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    async def on_data_switch_change(self, e=None):
+        if self.is_switching_data or self.is_applying:
+            self.data_switch.value = self.is_data_connected
+            try:
+                self.data_switch.update()
+            except Exception:
+                pass
+            return
+        target_on = bool(self.data_switch.value)
+        self.data_switch.value = self.is_data_connected
+        try:
+            self.data_switch.update()
+        except Exception:
+            pass
+        ok = await self._switch_data_connection(target_on)
+        if not ok:
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    async def load(self, silent: bool = False):
+        if self._loading:
+            return
+        self._loading = True
+        if not silent:
+            self.set_global_status("正在读取接入模式...", ft.Colors.ON_SURFACE)
+        try:
+            res = await self.api_client.get_access_mode()
+            mode = self._normalize_mode(res or {})
+            self.current_mode = mode
+            self.mode_dropdown.value = mode
+            self.txt_current.value = f"当前: {self._mode_label(mode)} ({mode})"
+
+            status = str((res or {}).get("ppp_status", "") or "").lower()
+            status_clean = status.replace("disconnected", "off")
+            is_connected = "connected" in status_clean
+            is_disconnected = "off" in status_clean and not is_connected
+            if is_connected:
+                self.is_data_connected = True
+            elif is_disconnected:
+                self.is_data_connected = False
+            self._sync_data_ui()
+            if not silent:
+                self.set_global_status("接入模式已同步", ft.Colors.PRIMARY)
+            try:
+                self.update()
+            except Exception:
+                pass
+        except Exception as ex:
+            logger.error(f"读取接入模式失败: {ex}", exc_info=DEBUG_MODE)
+            if not silent:
+                self.set_global_status("读取接入模式失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "读取接入模式失败", False)
+        finally:
+            self._loading = False
+
+    async def sync_current(self):
+        if self.visible:
+            await self.load(silent=True)
+
+    async def on_apply_mode(self, e=None):
+        if self.is_applying or self.is_switching_data:
+            return
+        if self.is_data_connected:
+            show_toast(self.app_page, "请先关闭数据连接后再切换接入模式", False)
+            return
+        mode = str(self.mode_dropdown.value or "").strip().upper()
+        if mode not in ("AUTO", "PPPOE", "PPP", "MULTIWAN"):
+            show_toast(self.app_page, "请选择有效的接入模式", False)
+            return
+        if mode == self.current_mode:
+            show_toast(self.app_page, "接入模式未变化", True)
+            return
+
+        self.is_applying = True
+        self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+        show_toast(self.app_page, f"正在切换接入模式为 {self._mode_label(mode)}...", True)
+        try:
+            ok = await self.api_client.set_access_mode(mode)
+            if ok:
+                self.current_mode = mode
+                self.txt_current.value = f"当前: {self._mode_label(mode)} ({mode})"
+                self.set_global_status(f"接入模式已切换为 {self._mode_label(mode)}", ft.Colors.PRIMARY)
+                show_toast(self.app_page, f"接入模式已切换为 {self._mode_label(mode)}", True)
+                await self.load(silent=True)
+            else:
+                self.set_global_status("接入模式切换失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "接入模式切换失败", False)
+        except Exception as ex:
+            logger.error(f"接入模式切换异常: {ex}", exc_info=DEBUG_MODE)
+            self.set_global_status("接入模式切换异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "接入模式切换异常", False)
+        finally:
+            self.is_applying = False
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        self.is_small_layout = is_small
+        self.is_ultra_small_layout = is_ultra_small
+        self.txt_title.size = 12 if is_ultra_small else (15 if is_small else 18)
+        self.txt_hint.size = 9 if is_ultra_small else (11 if is_small else 12)
+        if hasattr(self, "txt_mode_tip"):
+            self.txt_mode_tip.size = 9 if is_ultra_small else (11 if is_small else 12)
+        self.txt_current.size = 9 if is_ultra_small else (11 if is_small else 12)
+        label_size = 11 if is_ultra_small else (13 if is_small else 14)
+        self.txt_data_label.size = label_size
+        self.txt_mode_label.size = label_size
+        field_text_size = 10 if is_ultra_small else (12 if is_small else 14)
+        if hasattr(self.mode_dropdown, "text_size"):
+            self.mode_dropdown.text_size = field_text_size
+        self.btn_apply.height = 42 if is_ultra_small else 48
+        if self.btn_apply.style and getattr(self.btn_apply.style, "text_style", None):
+            self.btn_apply.style.text_style.size = 11 if is_ultra_small else (13 if is_small else 14)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+
 class RouterCard(ft.Container):
-    """路由设置：对应官方 #router_setting / adm/lan.js"""
+    """路由设置"""
 
     def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
         super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12, visible=False)
@@ -5325,7 +6138,7 @@ class RouterCard(ft.Container):
         if getattr(self, "_nat_busy", False):
             return
         self._nat_busy = True
-        # 乐观 UI：保持用户拨动后的状态，请求期间禁用开关；失败再回滚
+        # 保持用户拨动后的状态，请求期间禁用开关；失败再回滚
         target_on = bool(self.nat_enable.value)
         old_val = not target_on
         self.nat_enable.disabled = True
@@ -5362,7 +6175,7 @@ class RouterCard(ft.Container):
         if getattr(self, "_bridge_busy", False):
             return
         self._bridge_busy = True
-        # 乐观 UI：保持用户拨动后的状态，请求期间禁用开关；失败再回滚
+        # 保持用户拨动后的状态，请求期间禁用开关；失败再回滚
         target_on = bool(self.bridge_enable.value)
         old_val = not target_on
         action = "开启" if target_on else "关闭"
@@ -5782,8 +6595,9 @@ class RouterCard(ft.Container):
         self.txt_title.size = 12 if is_ultra_small else (15 if is_small else 18)
         if hasattr(self, "txt_mtu_title"):
             self.txt_mtu_title.size = 11 if is_ultra_small else (13 if is_small else 15)
-        if hasattr(self, "txt_bind_title"):
-            self.txt_bind_title.size = 12 if is_ultra_small else (15 if is_small else 18)
+        # MAC-IP 绑定列表标题字号
+        if hasattr(self, "txt_bind_list_title"):
+            self.txt_bind_list_title.size = 11 if is_ultra_small else (13 if is_small else 15)
         self.txt_hint.size = 9 if is_ultra_small else (11 if is_small else 12)
         if hasattr(self, "txt_hint_top"):
             self.txt_hint_top.size = 9 if is_ultra_small else (11 if is_small else 12)
@@ -5795,7 +6609,7 @@ class RouterCard(ft.Container):
             self.txt_bridge_tip.size = tip_size
         if hasattr(self, "txt_bind_tip"):
             self.txt_bind_tip.size = tip_size
-        for label in [self.txt_data_label, self.txt_dhcp_label, self.txt_nat_label, self.txt_bridge_label, self.txt_bind_enable_label, self.txt_bind_list_title, self.bind_rules_empty]:
+        for label in [self.txt_data_label, self.txt_dhcp_label, self.txt_nat_label, self.txt_bridge_label, self.txt_bind_enable_label, self.bind_rules_empty]:
             label.size = 11 if is_ultra_small else (13 if is_small else 14)
         field_text_size = 10 if is_ultra_small else (12 if is_small else 14)
         field_label_size = 10 if is_ultra_small else (12 if is_small else 14)
@@ -5928,6 +6742,7 @@ class MU5001:
         self.apn_card = APNCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status, refresh_config_cb=self.refresh_all)
         self.firewall_card = FirewallCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
         self.router_card = RouterCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
+        self.access_mode_card = AccessModeCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
 
         # 构建主视图布局 (这一步会创建 self.theme_btn)
         self.build_main_view()
@@ -5965,6 +6780,8 @@ class MU5001:
             self.firewall_card.show_menu()
         if hasattr(self, 'router_card'):
             self.router_card.visible = False
+        if hasattr(self, 'access_mode_card'):
+            self.access_mode_card.visible = False
         self.view_toolbox.update()
 
     def show_wifi_settings(self, e):
@@ -5978,6 +6795,8 @@ class MU5001:
             self.firewall_card.visible = False
         if hasattr(self, 'router_card'):
             self.router_card.visible = False
+        if hasattr(self, 'access_mode_card'):
+            self.access_mode_card.visible = False
         self.view_toolbox.update()
 
     def show_reboot_settings(self, e):
@@ -5991,6 +6810,8 @@ class MU5001:
             self.firewall_card.visible = False
         if hasattr(self, 'router_card'):
             self.router_card.visible = False
+        if hasattr(self, 'access_mode_card'):
+            self.access_mode_card.visible = False
         self.view_toolbox.update()
 
     def show_apn_settings(self, e):
@@ -6003,6 +6824,8 @@ class MU5001:
             self.firewall_card.visible = False
         if hasattr(self, 'router_card'):
             self.router_card.visible = False
+        if hasattr(self, 'access_mode_card'):
+            self.access_mode_card.visible = False
         self.view_toolbox.update()
 
     def show_firewall_settings(self, e):
@@ -6011,6 +6834,8 @@ class MU5001:
         self.settings_card.wifi_section.visible = False
         self.reboot_card.visible = False
         self.apn_card.visible = False
+        if hasattr(self, 'access_mode_card'):
+            self.access_mode_card.visible = False
         if hasattr(self, 'firewall_card'):
             self.firewall_card.visible = True
         if hasattr(self, 'router_card'):
@@ -6030,10 +6855,28 @@ class MU5001:
         self.apn_card.visible = False
         if hasattr(self, "firewall_card"):
             self.firewall_card.visible = False
+        if hasattr(self, "access_mode_card"):
+            self.access_mode_card.visible = False
         if hasattr(self, "router_card"):
             self.router_card.visible = True
             spawn_background_task(self, self.router_card.load())
         self.view_toolbox.update()
+
+    def show_access_mode_settings(self, e=None):
+        self.toolbox_menu.visible = False
+        self.toolbox_content.visible = True
+        self.settings_card.wifi_section.visible = False
+        self.reboot_card.visible = False
+        self.apn_card.visible = False
+        if hasattr(self, "firewall_card"):
+            self.firewall_card.visible = False
+        if hasattr(self, "router_card"):
+            self.router_card.visible = False
+        if hasattr(self, "access_mode_card"):
+            self.access_mode_card.visible = True
+            spawn_background_task(self, self.access_mode_card.load())
+        self.view_toolbox.update()
+
     def show_disconnected_ui(self):
         if hasattr(self, "disconnect_text"):
             self.disconnect_text.value = "未连接 WiFi"
@@ -6175,6 +7018,7 @@ class MU5001:
             ft.Container(self._create_tool_item(ft.Icons.CELL_TOWER, "APN 设置", self.show_apn_settings), col={"xs": 12, "sm": 6}),
             ft.Container(self._create_tool_item(ft.Icons.SECURITY, "防火墙", self.show_firewall_settings), col={"xs": 12, "sm": 6}),
             ft.Container(self._create_tool_item(ft.Icons.ROUTER, "路由设置", self.show_router_settings), col={"xs": 12, "sm": 6}),
+            ft.Container(self._create_tool_item(ft.Icons.SWAP_HORIZ, "接入模式", self.show_access_mode_settings), col={"xs": 12, "sm": 6}),
         ]
         self.toolbox_menu = ft.ResponsiveRow(controls=self.toolbox_items, spacing=14, run_spacing=14)
         
@@ -6183,6 +7027,7 @@ class MU5001:
         self.apn_card.visible = False
         self.firewall_card.visible = False
         self.router_card.visible = False
+        self.access_mode_card.visible = False
 
         self.toolbox_content = ft.Column([
             self.settings_card.wifi_section,
@@ -6190,6 +7035,7 @@ class MU5001:
             self.apn_card,
             self.firewall_card,
             self.router_card,
+            self.access_mode_card,
         ], visible=False)
 
         # 内部滚动容器
@@ -6461,6 +7307,8 @@ class MU5001:
             self.apn_card.update_realtime(status) # 将联网状态传给 APN 控制按钮显示
             if hasattr(self, 'router_card'):
                 self.router_card.update_realtime(status)
+            if hasattr(self, 'access_mode_card'):
+                self.access_mode_card.update_realtime(status)
             return True
         except Exception as e:
             logger.debug(f"实时刷新异常: {e}")
@@ -6572,6 +7420,9 @@ class MU5001:
                 current_net_mode
             )
             self.apn_card.update_config(res)
+            # 右上角刷新：丢弃未应用的下拉选择，按设备真实接入模式回显
+            if hasattr(self, "access_mode_card") and self.access_mode_card is not None:
+                await self.access_mode_card.load(silent=True)
 
             dev_status = " | 开发者模式已解锁" if self.device_state.dev_unlocked else " | 开发者模式未解锁"
             self.status_card.set_global_status("数据读取成功" + dev_status, ft.Colors.PRIMARY if self.device_state.dev_unlocked else ft.Colors.ERROR)
@@ -6615,6 +7466,8 @@ class MU5001:
             await self.firewall_card.sync_current_feature()
         if hasattr(self, "router_card"):
             await self.router_card.sync_current()
+        if hasattr(self, "access_mode_card"):
+            await self.access_mode_card.sync_current()
         self.start_auto_refresh()
 
     async def do_relogin(self, e=None):
@@ -6654,6 +7507,8 @@ class MU5001:
                     await self.firewall_card.sync_current_feature()
                 if hasattr(self, "router_card"):
                     await self.router_card.sync_current()
+                if hasattr(self, "access_mode_card"):
+                    await self.access_mode_card.sync_current()
 
                 self.offline_count = 0
                 self.is_connected = True
@@ -6745,6 +7600,8 @@ class MU5001:
             self.firewall_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'router_card'):
             self.router_card.update_size(is_small, is_ultra_small)
+        if hasattr(self, 'access_mode_card'):
+            self.access_mode_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'toolbox_menu'):
             self.toolbox_menu.spacing = 6 if is_ultra_small else (10 if is_small else 14)
             self.toolbox_menu.run_spacing = 6 if is_ultra_small else (10 if is_small else 14)

@@ -6,6 +6,7 @@ import logging
 import asyncio
 import time
 import re
+import random
 import ipaddress
 from datetime import datetime
 from dataclasses import dataclass
@@ -105,7 +106,7 @@ AUTO_REFRESH_INTERVAL = 1                 # 实时状态自动刷新间隔
 STATION_LIST_REFRESH_INTERVAL = 3         # WiFi 设备列表刷新间隔
 LAN_STATION_LIST_REFRESH_INTERVAL = 5     # 有线设备列表刷新间隔
 BLACKLIST_REFRESH_INTERVAL = 5            # 黑名单刷新间隔
-OFFLINE_FAIL_THRESHOLD = 2    # 连续2次失败后显示断网
+OFFLINE_FAIL_THRESHOLD = 3    # 连续约3次失败才断网/判会话失效
 NET_SWITCH_DELAY = 0.5        # 网络断连/重连等待时间
 
 # 网络模式映射：界面显示名 <-> 设备读写参数
@@ -125,7 +126,7 @@ NR_NSA_BANDS = ["28","41","78"]
 
 
 # WiFi 高级设置（对齐官方 wifi_advance / setWiFiChipAdvancedInfo24G_5G）
-# 精简为国家码集合：覆盖全部 2.4G/5G 可用信道号，并保留中国与港澳台
+# 精简为国家码集合：覆盖全部 2.4G/5G 可用信道号
 WIFI_COUNTRIES = [
     ('CN', '中国'),
     ('TW', '中国台湾'),
@@ -331,10 +332,6 @@ def normalize_mac(value: str) -> Optional[str]:
         return None
     return ":".join(hex_only[i:i+2] for i in range(0, 12, 2))
 
-# 校验是否为合法 MAC（非空且格式正确）
-def is_valid_mac(value: str) -> bool:
-    return normalize_mac(value) not in (None, "")
-
 # 校验 IPv4 地址
 def is_valid_ipv4(value: str) -> bool:
     raw = (value or "").strip()
@@ -414,21 +411,6 @@ def mask_to_lte_bands(mask_str: str) -> List[str]:
     logger.debug(f"掩码转 LTE 频段: {mask_str} -> {bands}")
     return bands
 
-# 极速探活工具：绕过 HTTP，直接使用底层 TCP 敲门，0.5秒连不上直接判死
-async def check_router_alive(ip: str = "192.168.0.1", port: int = 80) -> bool:
-    # 去掉协议和路径，只保留主机部分
-    pure_ip = ip.replace("http://", "").replace("https://", "").split("/")[0]
-    try:
-        # 0.5 秒内 TCP 握手成功即视为在线
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(pure_ip, port), timeout=0.5)
-        writer.close()
-        await writer.wait_closed()
-        return True
-    except Exception:
-        # 超时或连不上：统一按离线处理
-        return False
-
-
 # 后台任务启动器：把 Task 存进 owner.background_tasks，防止 GC 中途回收
 def spawn_background_task(owner, coro) -> asyncio.Task:
     tasks = getattr(owner, "background_tasks", None)
@@ -467,6 +449,7 @@ class DeviceState:
     rd1: str = ""                                # 设备固件版本号
     password: str = ""                           # 明文管理员密码
     dev_unlocked: bool = False                   # 开发者模式是否解锁
+    is_wired_access: bool = False                # 有线宽带接入：禁用蜂窝数据开关
 
 # 数据模型
 @dataclass
@@ -509,7 +492,7 @@ class RealtimeStatus:
     connected_devices: list
     blacklisted_devices: list
 
-# 封装设备登录、配置读写、状态查询等所有 HTTP 交互，自动维护会话 Cookie 与 AD 鉴权计算。
+# 封装设备登录、配置读写、状态查询等所有 HTTP 交互，自动维护会话 Cookie 与 AD 鉴权计算
 class MU5001Client:
     # 初始化客户端，state 为外部共享的设备状态实例
     def __init__(self, state: DeviceState):
@@ -579,6 +562,72 @@ class MU5001Client:
             # 这里的 exc_info=True 是排错神器，能精准打印出代码里比如 None.strip() 导致的崩溃行号
             logger.error(f"GET 执行时发生代码内部异常: {cmd}, {type(e).__name__}: {e}", exc_info=True)
             raise
+
+    async def probe_device_link(self) -> str:
+        """轻量探活：设备网 + 登录会话
+
+        1) HTTP 失败 = 没连上设备 WiFi/网线
+        2) HTTP 成功后判定登录：
+           - PA 温度有值 → 会话有效
+           - PA 拿不到 → 登录失效（主条件）
+           - IMSI 仅二次确认写日志（有值也不能救回会话）
+
+        返回: ok | network_down | session_invalid | busy
+        """
+        if not self.state.client:
+            return "network_down"
+        try:
+            res = await self.get_cmd("pm_sensor_pa1,sim_imsi,imsi", multi_data=True)
+        except httpx.TimeoutException:
+            return "busy"
+        except (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError):
+            return "network_down"
+        except Exception as ex:
+            # 能连上设备但返回非 JSON（常见于会话失效被踢回登录页 HTML）→ 会话失效，不是断网
+            name = type(ex).__name__
+            msg = str(ex).lower()
+            if "JSON" in name or "json" in msg or "Expecting value" in str(ex):
+                logger.debug(f"probe_device_link 非JSON响应，按会话失效: {name}: {ex}")
+                return "session_invalid"
+            logger.debug(f"probe_device_link 异常: {name}: {ex}")
+            return "network_down"
+
+        if not isinstance(res, dict):
+            return "session_invalid"
+
+        def _clean(key: str) -> str:
+            return str(res.get(key, "") or "").strip()
+
+        def _is_empty_token(v: str) -> bool:
+            # 通用空占位（不含数字 0：PA 温度 0℃ 是合法读数）
+            return (not v) or v in ("?", "--", "未知", "N/A", "n/a", "null", "None", "")
+
+        def _has_pa(v: str) -> bool:
+            # PA：有可读温度即有效；"0" / "0.0" 算有值；纯空串/占位才算无
+            if _is_empty_token(v):
+                return False
+            return True
+
+        def _has_imsi(v: str) -> bool:
+            # IMSI：卡号，"0" 不是合法 IMSI
+            if _is_empty_token(v) or v in ("0", "00"):
+                return False
+            return True
+
+        pa = _clean("pm_sensor_pa1")
+        imsi = _clean("sim_imsi") or _clean("imsi")
+
+        # ① PA 有值 = 登录有效（含 0℃）
+        if _has_pa(pa):
+            return "ok"
+
+        # ② PA 拿不到 = 登录失效（主判定）
+        # ③ IMSI 仅二次确认：两者都空更确信；有 IMSI 也不能救回会话
+        if not _has_imsi(imsi):
+            logger.debug("PA 与 IMSI 均无，二次确认会话失效")
+        else:
+            logger.debug("PA 无（IMSI 仍有），仍按 PA 主条件判会话失效")
+        return "session_invalid"
 
     # 异步 POST 设置设备配置，自动计算 AD 鉴权
     # goform_id 为操作标识，params 为业务参数
@@ -832,7 +881,11 @@ class MU5001Client:
             await asyncio.sleep(0.5)
         return False
 
-    async def set_data_connection(self, target_on: bool, timeout: float = 10.0) -> bool:
+    async def set_data_connection(self, target_on: bool, timeout: float = 10.0, force: bool = False) -> bool:
+        # 有线宽带接入时蜂窝数据开关不可用
+        if self.is_wired_access():
+            logger.warning("有线宽带模式下禁止切换蜂窝数据连接")
+            return False
         try:
             async with self._request_lock:
                 status_res = await self._get_cmd_unlocked("ppp_status")
@@ -840,7 +893,8 @@ class MU5001Client:
                 status_clean = status.replace("disconnected", "off")
                 is_connected = "connected" in status_clean
                 is_disconnected = "off" in status_clean and not is_connected
-                if (target_on and is_connected) or (not target_on and is_disconnected):
+                # force=True：登录/重登时强制下发，避免状态误判直接跳过
+                if (not force) and ((target_on and is_connected) or (not target_on and is_disconnected)):
                     return True
                 goform_id = "CONNECT_NETWORK" if target_on else "DISCONNECT_NETWORK"
                 if not await self._post_cmd_unlocked(goform_id, {"notCallback": "true"}):
@@ -850,7 +904,7 @@ class MU5001Client:
             logger.error(f"数据连接切换异常: {e}", exc_info=DEBUG_MODE)
             return False
 
-    # 异步切换网络模式。官方页面仅允许在数据断开后修改，完成后恢复原连接状态。
+    # 异步切换网络模式，官方页面仅允许在数据断开后修改，完成后恢复原连接状态
     async def switch_net_mode(self, mode_val: str, was_connected: bool) -> bool:
         try:
             async with self._request_lock:
@@ -875,18 +929,42 @@ class MU5001Client:
             return False
 
 
-    # 读取接入模式（官方 App: opms_wan_mode / opms_wan_auto_mode）
+    def update_wired_access_flag(self, res: Optional[Dict] = None, op_mode: str = "") -> bool:
+        # 有线宽带(含 DHCP/静态/PPPoE 子模式)时锁定蜂窝数据开关
+        wired = False
+        mode = str(op_mode or "").strip().upper()
+        if mode in ("PPPOE", "DHCP", "STATIC"):
+            wired = True
+        elif res:
+            raw = str(res.get("opms_wan_mode", "") or "").strip().upper()
+            # AUTO / AUTO_* 仍视为非“纯有线接入”，不锁数据
+            if raw in ("PPPOE", "DHCP", "STATIC"):
+                wired = True
+        self.state.is_wired_access = wired
+        return wired
+
+    def is_wired_access(self) -> bool:
+        return bool(getattr(self.state, "is_wired_access", False))
+
+    # 读取接入模式 + 有线宽带回显字段（官方 get 字段，非探测）
     async def get_access_mode(self) -> Dict:
         try:
-            return await self.get_cmd(
-                "opms_wan_mode,opms_wan_auto_mode,ppp_status",
+            res = await self.get_cmd(
+                "opms_wan_mode,opms_wan_auto_mode,ppp_status,"
+                "pppoe_username,pppoe_password,pppoe_dial_mode,pppoe_status,"
+                "static_wan_ipaddr,static_wan_netmask,static_wan_gateway,"
+                "static_wan_primary_dns,static_wan_secondary_dns,"
+                "dhcp_wan_status,static_wan_status,"
+                "wifi_sta_connection,ap_station_mode",
                 multi_data=True,
             )
+            self.update_wired_access_flag(res or {})
+            return res
         except Exception as e:
             logger.error(f"读取接入模式异常: {e}", exc_info=DEBUG_MODE)
             return {}
 
-    # 设置接入模式。抓包: goformId=OPERATION_MODE&opMode=AUTO|PPPOE|PPP|MULTIWAN
+    # 设置接入模式，抓包: goformId=OPERATION_MODE&opMode=AUTO|PPPOE|PPP|MULTIWAN
     # 调用方需保证数据连接已断开
     async def set_access_mode(self, op_mode: str) -> bool:
         mode = str(op_mode or "").strip().upper()
@@ -894,9 +972,209 @@ class MU5001Client:
             logger.error(f"非法接入模式: {op_mode}")
             return False
         try:
-            return await self.post_cmd("OPERATION_MODE", {"opMode": mode})
+            ok = await self.post_cmd("OPERATION_MODE", {"opMode": mode})
+            if ok:
+                # 有线宽带=PPPOE，其它接入方式解锁数据开关
+                self.update_wired_access_flag(op_mode=mode if mode == "PPPOE" else mode)
+                if mode != "PPPOE":
+                    self.state.is_wired_access = False
+                else:
+                    self.state.is_wired_access = True
+            return ok
         except Exception as e:
             logger.error(f"切换接入模式异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 有线宽带-动态IP，抓包: goformId=WAN_GATEWAYMODE_DHCP&notCallback=true
+    async def set_wired_wan_dhcp(self) -> bool:
+        try:
+            return await self.post_cmd("WAN_GATEWAYMODE_DHCP", {"notCallback": "true"})
+        except Exception as e:
+            logger.error(f"有线动态IP设置异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 有线宽带-静态IP，抓包: WAN_GATEWAYMODE_STATIC + static_wan_* + WAN_MODE=STATIC
+    async def set_wired_wan_static(
+        self,
+        ip: str,
+        netmask: str,
+        gateway: str,
+        primary_dns: str,
+        secondary_dns: str,
+    ) -> bool:
+        try:
+            return await self.post_cmd(
+                "WAN_GATEWAYMODE_STATIC",
+                {
+                    "notCallback": "true",
+                    "static_wan_ipaddr": ip,
+                    "static_wan_netmask": netmask,
+                    "static_wan_gateway": gateway,
+                    "static_wan_primary_dns": primary_dns,
+                    "static_wan_secondary_dns": secondary_dns,
+                    "WAN_MODE": "STATIC",
+                },
+            )
+        except Exception as e:
+            logger.error(f"有线静态IP设置异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 有线宽带-PPPoE，抓包: WAN_GATEWAYMODE_PPPOE + user/pwd/dial_mode/action_link
+    async def set_wired_wan_pppoe(
+        self,
+        username: str,
+        password: str,
+        dial_mode: str = "manual_dial",
+        action_link: str = "connect",
+    ) -> bool:
+        try:
+            return await self.post_cmd(
+                "WAN_GATEWAYMODE_PPPOE",
+                {
+                    "notCallback": "true",
+                    "pppoe_username": username,
+                    "pppoe_password": password,
+                    "dial_mode": dial_mode,
+                    "action_link": action_link,
+                },
+            )
+        except Exception as e:
+            logger.error(f"有线PPPoE设置异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 无线宽带 Internet Wi-Fi，抓包: WIFI_STA_CONTROL wifi_sta_connection=0/1 ap_station_mode=wifi_pref
+    async def set_wifi_sta_control(self, enable: bool, ap_station_mode: str = "wifi_pref") -> bool:
+        try:
+            return await self.post_cmd(
+                "WIFI_STA_CONTROL",
+                {
+                    "wifi_sta_connection": "1" if enable else "0",
+                    "ap_station_mode": ap_station_mode or "wifi_pref",
+                },
+            )
+        except Exception as e:
+            logger.error(f"Internet Wi-Fi 设置异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 扫描附近热点，抓包: goformId=WLAN_SET_STA_REFRESH
+    async def wifi_sta_scan_refresh(self) -> bool:
+        try:
+            return await self.post_cmd("WLAN_SET_STA_REFRESH", {})
+        except Exception as e:
+            logger.error(f"Internet Wi-Fi 扫描异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 读取扫描结果，官方 cmd: scan_finish,EX_APLIST,EX_APLIST1
+    async def get_wifi_sta_scan_list(self) -> Dict:
+        try:
+            res = await self.get_cmd("scan_finish,EX_APLIST,EX_APLIST1", multi_data=True)
+            return res or {}
+        except Exception as e:
+            logger.error(f"读取扫描结果异常: {e}", exc_info=DEBUG_MODE)
+            return {}
+
+    # 读取已保存热点配置，官方 cmd: wifi_profile...wifi_profile_num
+    async def get_wifi_sta_profiles(self) -> Dict:
+        try:
+            res = await self.get_cmd(
+                "wifi_profile,wifi_profile1,wifi_profile2,wifi_profile3,wifi_profile4,wifi_profile5,wifi_profile_num",
+                multi_data=True,
+            )
+            return res or {}
+        except Exception as e:
+            logger.error(f"读取热点配置异常: {e}", exc_info=DEBUG_MODE)
+            return {}
+
+    # 增删改热点配置，抓包: WIFI_SPOT_PROFILE_UPDATE action=add|modify
+    async def wifi_spot_profile_update(
+        self,
+        profiles: List[str],
+        action: str = "add",
+        wifi_update_profile: str = "",
+    ) -> bool:
+        try:
+            action = (action or "add").strip().lower()
+            buckets = [""] * 6
+            clean = [str(x or "").strip() for x in (profiles or []) if str(x or "").strip()]
+            for i, s in enumerate(clean):
+                idx = min(i // 5, 5)
+                buckets[idx] = s if not buckets[idx] else (buckets[idx] + ";" + s)
+            params = {
+                "wifi_profile": buckets[0],
+                "wifi_profile1": buckets[1],
+                "wifi_profile2": buckets[2],
+                "wifi_profile3": buckets[3],
+                "wifi_profile4": buckets[4],
+                "wifi_profile5": buckets[5],
+                "wifi_profile_num": str(len(clean)),
+                "wifi_update_profile": wifi_update_profile or "",
+                "action": action,
+            }
+            return await self.post_cmd("WIFI_SPOT_PROFILE_UPDATE", params)
+        except Exception as e:
+            logger.error(f"热点配置更新异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 连接热点，抓包: WLAN_SET_STA_CON + EX_* 字段
+    async def wifi_sta_connect(
+        self,
+        ssid: str,
+        auth_mode: str,
+        encrypt_type: str,
+        password: str = "",
+        profile_name: str = "",
+        key_id: str = "0",
+    ) -> bool:
+        try:
+            auth = (auth_mode or "OPEN").replace("-", "").replace("_", "").upper()
+            enc = (encrypt_type or "NONE").upper()
+            if enc == "AES":
+                enc = "CCMP"
+            pwd = password or ""
+            return await self.post_cmd(
+                "WLAN_SET_STA_CON",
+                {
+                    "EX_SSID1": ssid or "",
+                    "EX_AuthMode": auth,
+                    "EX_EncrypType": enc,
+                    "EX_DefaultKeyID": str(key_id or "0"),
+                    "EX_WEPKEY": pwd,
+                    "EX_WPAPSK1": pwd,
+                    "EX_wifi_profile": profile_name or "",
+                },
+            )
+        except Exception as e:
+            logger.error(f"连接热点异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 断开热点，抓包: WLAN_SET_STA_DISCON
+    async def wifi_sta_disconnect(self) -> bool:
+        try:
+            return await self.post_cmd("WLAN_SET_STA_DISCON", {})
+        except Exception as e:
+            logger.error(f"断开热点异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 登录/重登默认：断开 STA WiFi，再强制打开蜂窝数据
+    async def restore_cellular_prefer_data(self, timeout: float = 20.0) -> bool:
+        if self.is_wired_access():
+            logger.info("有线接入，跳过断开 STA / 强制开数据")
+            return False
+        try:
+            # 无论是否已连接，都尝试断开外部 WiFi，避免重登后仍挂在 STA 上
+            try:
+                await self.wifi_sta_disconnect()
+                await asyncio.sleep(0.8)
+            except Exception as de:
+                logger.warning(f"登录时断开 STA 失败(可忽略): {de}")
+            ok = await self.set_data_connection(True, timeout=timeout, force=True)
+            if not ok:
+                # 再试一次
+                await asyncio.sleep(0.5)
+                ok = await self.set_data_connection(True, timeout=timeout, force=True)
+            return bool(ok)
+        except Exception as e:
+            logger.error(f"登录恢复蜂窝数据异常: {e}", exc_info=DEBUG_MODE)
             return False
 
     # 获取设备 LD 值（登录密码加密盐），失败返回空串
@@ -1157,7 +1435,7 @@ def create_dropdown(label: str, options: list, value: str, **kwargs) -> ft.Dropd
         label=label, options=options, value=value,
         color=ft.Colors.ON_SURFACE, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
         border_color=ft.Colors.ON_SURFACE_VARIANT, focused_border_color=ft.Colors.PRIMARY,
-        label_style=sec_style, text_size=15, content_padding=ft.Padding(12, 10, 12, 10),
+        label_style=sec_style, text_size=15, content_padding=ft.Padding(left=12, top=10, right=12, bottom=10),
         **kwargs
     )
 
@@ -1568,10 +1846,18 @@ class StatusCard(ft.Container):
         
         if self._update_field(self.txt_ecellid, ecellid_str): has_changes = True
         
-        # 更新温度信息
-        if self._update_field(self.txt_temp_bat, f"电池温度:{sep}{status.temp_bat}℃"): has_changes = True
-        if self._update_field(self.txt_temp_mdm, f"4G Modem:{sep}{status.temp_mdm}℃"): has_changes = True
-        if self._update_field(self.txt_temp_pa, f"PA:{sep}{status.temp_pa}℃"): has_changes = True
+        # 更新温度信息（空值显示 --，避免掉线后出现「PA: ℃」）
+        def _fmt_temp(v) -> str:
+            s = str(v or "").strip()
+            if (not s) or s in ("?", "--", "None", "null"):
+                return "--"
+            if s.endswith("℃") or s.endswith("°C"):
+                return s
+            return f"{s}℃"
+
+        if self._update_field(self.txt_temp_bat, f"电池温度:{sep}{_fmt_temp(status.temp_bat)}"): has_changes = True
+        if self._update_field(self.txt_temp_mdm, f"4G Modem:{sep}{_fmt_temp(status.temp_mdm)}"): has_changes = True
+        if self._update_field(self.txt_temp_pa, f"PA:{sep}{_fmt_temp(status.temp_pa)}"): has_changes = True
         
         if has_changes:
             self.update()
@@ -1924,8 +2210,13 @@ class SettingsCard(ft.Container):
         self.wifi_detail_5g_section = create_detail_controls("5g", "5GHz")
         self.wifi_detail_5g_section.visible = False
         # 同步到5GHz 开启时：2.4G 的广播/隔离/加密/密码变更实时同步 5G
+        # Checkbox/TextField 用 on_change；Dropdown(auth) 在 Flet 0.85+ 用 on_select
         for _key in ["broadcast", "isolate", "auth", "password"]:
-            self.wifi_detail_24g[_key].on_change = lambda e: self.update_wifi_sync_state()
+            ctrl = self.wifi_detail_24g[_key]
+            if _key == "auth":
+                ctrl.on_select = lambda e: self.update_wifi_sync_state()
+            else:
+                ctrl.on_change = lambda e: self.update_wifi_sync_state()
         btn_apply_wifi_detail = create_button("应用WiFi设置", on_click=self.on_apply_wifi_detail, expand=True)
         self.wifi_sync_to_5g = create_checkbox(label="", value=False, on_change=lambda e: self.update_wifi_sync_state())
         self.wifi_sync_to_5g_row = make_checkbox_line(self.wifi_sync_to_5g, "同步到5GHz")
@@ -2434,26 +2725,47 @@ class SettingsCard(ft.Container):
         status_clean = status.replace("disconnected", "off")
         is_connected = "connected" in status_clean
         is_disconnected = "off" in status_clean and not is_connected
+        wired = False
+        try:
+            wired = bool(self.api_client.is_wired_access())
+        except Exception:
+            wired = False
 
         # 只在状态明确连上或断开时，且用户没有在手动切换时更新，防止正在连接中(connecting)发生界面跳动
         if not self.is_switching_data:
-         if is_connected and not self.data_switch.value:
-             self.data_switch.value = True
-             try:
-                 self.data_switch.update()  # 局部刷新：只更新小开关动画
-             except Exception:
-                 pass
-         elif is_disconnected and self.data_switch.value:
-             self.data_switch.value = False
-             try:
-                 self.data_switch.update()  # 局部刷新：只更新小开关动画
-             except Exception:
-                 pass
+            if wired:
+                # 有线模式：显示为关闭且锁定
+                if self.data_switch.value:
+                    self.data_switch.value = False
+                self.data_switch.disabled = True
+                try:
+                    self.data_switch.update()
+                except Exception:
+                    pass
+            else:
+                self.data_switch.disabled = False
+                if is_connected and not self.data_switch.value:
+                    self.data_switch.value = True
+                    try:
+                        self.data_switch.update()  # 局部刷新：只更新小开关动画
+                    except Exception:
+                        pass
+                elif is_disconnected and self.data_switch.value:
+                    self.data_switch.value = False
+                    try:
+                        self.data_switch.update()  # 局部刷新：只更新小开关动画
+                    except Exception:
+                        pass
     
     # 按钮锁死助手函数
     def _toggle_network_lock(self, disabled: bool):
         # 同时禁用/启用：数据开关、应用按钮、6个网络模式勾选框
-        self.data_switch.disabled = disabled
+        wired = False
+        try:
+            wired = bool(self.api_client.is_wired_access())
+        except Exception:
+            wired = False
+        self.data_switch.disabled = True if wired else disabled
         self.btn_net_mode_apply.disabled = disabled
         for cb in self.net_mode_cbs.values():
             cb.disabled = disabled
@@ -2474,6 +2786,15 @@ class SettingsCard(ft.Container):
         if self.is_switching_data:
             self.data_switch.value = not self.data_switch.value
             self.data_switch.update()
+            return
+        if self.api_client.is_wired_access():
+            self.data_switch.value = False
+            self.data_switch.disabled = True
+            try:
+                self.data_switch.update()
+            except Exception:
+                pass
+            show_toast(self.app_page, "有线宽带模式下不可切换数据连接", False)
             return
 
         self.is_switching_data = True
@@ -2762,7 +3083,6 @@ class SettingsCard(ft.Container):
 
     async def on_apply_wifi_advance(self, e=None):
         # 官方提示：修改高级设置会使 WiFi 短暂断开
-        # Flet 0.85+ 用 show_dialog/pop_dialog 管理弹窗，overlay 方式取消关不掉
         def close_dlg(ev=None):
             try:
                 if getattr(dlg, "open", False):
@@ -2780,15 +3100,15 @@ class SettingsCard(ft.Container):
 
         dlg = ft.AlertDialog(
             bgcolor=ft.Colors.SURFACE,
-            title_padding=ft.Padding(0, 0, 0, 0),
-            content_padding=ft.Padding(0, 0, 0, 0),
-            actions_padding=ft.Padding(0, 0, 0, 0),
-            inset_padding=ft.Padding(10, 24, 10, 24),
+            title_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            content_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            actions_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            inset_padding=ft.Padding(left=10, top=24, right=10, bottom=24),
             modal=True,
             content=ft.Container(
                 height=70,
                 alignment=ft.Alignment(0, 0),
-                padding=ft.Padding(10, 0, 10, 0),
+                padding=ft.Padding(left=10, top=0, right=10, bottom=0),
                 content=ft.Row(
                     controls=[
                         ft.Container(content=ft.TextButton("取消", on_click=close_dlg, style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT)), expand=True, alignment=ft.Alignment(0, 0)),
@@ -2891,15 +3211,15 @@ class SettingsCard(ft.Container):
 
         dlg = ft.AlertDialog(
             bgcolor=ft.Colors.SURFACE,
-            title_padding=ft.Padding(0, 0, 0, 0),
-            content_padding=ft.Padding(0, 0, 0, 0),
-            actions_padding=ft.Padding(0, 0, 0, 0),
-            inset_padding=ft.Padding(10, 24, 10, 24),
+            title_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            content_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            actions_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            inset_padding=ft.Padding(left=10, top=24, right=10, bottom=24),
             modal=True,
             content=ft.Container(
                 height=70,
                 alignment=ft.Alignment(0, 0),
-                padding=ft.Padding(10, 0, 10, 0),
+                padding=ft.Padding(left=10, top=0, right=10, bottom=0),
                 content=ft.Row(
                     controls=[
                         ft.Container(content=ft.TextButton("取消", on_click=close_dlg, style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT)), expand=True, alignment=ft.Alignment(0, 0)),
@@ -3105,6 +3425,7 @@ class APNCard(ft.Container):
         self.is_data_connected = True
         self.is_switching_data = False
         self.is_adding_profile = False
+        self._data_on_before_add = False  # 点新增前数据是否开着，取消时按此恢复
         self.auto_data = {"name": "", "apn": "", "pdp": "IPv4v6", "auth": "NONE", "user": "", "pwd": ""}
         self.manual_profiles: List[Dict[str, str]] = []
         self.raw_manual_profile_count = 0
@@ -3136,8 +3457,11 @@ class APNCard(ft.Container):
         )
 
         self.dropdown_profile = create_dropdown("", [], None, expand=True)
-        self.dropdown_profile.on_change = self.on_profile_change
+        # Flet 0.85+ Dropdown 用 on_select
+        self.dropdown_profile.on_select = self.on_profile_change
+        self.txt_add_profile_btn = ft.Text("新增", weight=ft.FontWeight.W_600, size=13)
         self.btn_add_profile = create_button("新增", on_click=self.on_add_profile)
+        self.btn_add_profile.content = self.txt_add_profile_btn
         
         self.dropdown_pdp_type = create_dropdown("", [ft.dropdown.Option("IPv4"), ft.dropdown.Option("IPv6"), ft.dropdown.Option("IPv4v6")], "IPv4v6", expand=True)
         self.input_profile_name = create_text_field(label="", expand=True)
@@ -3359,7 +3683,15 @@ class APNCard(ft.Container):
         return data
 
     def _sync_data_ui(self):
+        wired = False
+        try:
+            wired = bool(self.api_client.is_wired_access())
+        except Exception:
+            wired = False
+        if wired:
+            self.is_data_connected = False
         self.data_switch.value = self.is_data_connected
+        self.data_switch.disabled = self.is_switching_data or wired
         self.btn_set_default.visible = True
         self.btn_set_default.disabled = self.is_switching_data
         self.btn_add_profile.disabled = self.is_switching_data
@@ -3376,6 +3708,28 @@ class APNCard(ft.Container):
                      self.input_user, self.input_pwd]:
             ctrl.disabled = not can_edit
         self.dropdown_profile.disabled = not can_edit or self.is_adding_profile
+        self._sync_add_profile_btn_text()
+
+    def _sync_add_profile_btn_text(self):
+        # 新增中显示「取消」，否则「新增」
+        if not hasattr(self, "btn_add_profile") or self.btn_add_profile is None:
+            return
+        label = "取消" if self.is_adding_profile else "新增"
+        # Flet 0.85 Button 只认 content；用固定 Text 子控件改 value，才能稳定刷新文案
+        if not hasattr(self, "txt_add_profile_btn") or self.txt_add_profile_btn is None:
+            self.txt_add_profile_btn = ft.Text(label, weight=ft.FontWeight.W_600, size=13)
+        else:
+            self.txt_add_profile_btn.value = label
+        self.btn_add_profile.content = self.txt_add_profile_btn
+        try:
+            self.txt_add_profile_btn.update()
+        except Exception:
+            pass
+        try:
+            self.btn_add_profile.update()
+        except Exception:
+            pass
+
 
     def update_realtime(self, status: 'RealtimeStatus'):
         if self.is_switching_data:
@@ -3400,7 +3754,12 @@ class APNCard(ft.Container):
         self.update()
 
     def _set_apn_actions_locked(self, disabled: bool):
-        self.data_switch.disabled = disabled
+        wired = False
+        try:
+            wired = bool(self.api_client.is_wired_access())
+        except Exception:
+            wired = False
+        self.data_switch.disabled = True if wired else disabled
         if disabled:
             self._sync_apn_editable_controls()
             for btn in [self.btn_set_default, self.btn_apply, self.btn_delete, self.btn_add_profile]:
@@ -3411,12 +3770,6 @@ class APNCard(ft.Container):
             self.update()
         except Exception:
             pass
-
-    def _ensure_data_disconnected(self) -> bool:
-        if self.is_data_connected:
-            show_toast(self.app_page, "请先关闭数据连接后再修改 APN", False)
-            return False
-        return True
 
     async def _switch_data_connection(self, target_on: bool, reason: str = "") -> bool:
         if self.is_data_connected == target_on:
@@ -3449,6 +3802,15 @@ class APNCard(ft.Container):
         if self.is_switching_data:
             self.data_switch.value = self.is_data_connected
             self.data_switch.update()
+            return
+        if self.api_client.is_wired_access():
+            self.data_switch.value = False
+            self.data_switch.disabled = True
+            try:
+                self.data_switch.update()
+            except Exception:
+                pass
+            show_toast(self.app_page, "有线宽带模式下不可切换数据连接", False)
             return
 
         target_on = bool(self.data_switch.value)
@@ -3693,6 +4055,8 @@ class APNCard(ft.Container):
                 btn.width = None  # 彻底解除宽度限制，自适应三等分生效
             if btn.style and btn.style.text_style:
                 btn.style.text_style.size = button_text_size
+        if hasattr(self, "txt_add_profile_btn") and self.txt_add_profile_btn is not None:
+            self.txt_add_profile_btn.size = button_text_size
         if is_ultra_small:
             self.action_row.alignment = ft.MainAxisAlignment.START
             self.action_row.spacing = 8
@@ -3712,23 +4076,52 @@ class APNCard(ft.Container):
             pass
 
     async def on_add_profile(self, e):
-        if self.is_data_connected and not await self._switch_data_connection(False, "可修改 APN"):
-            return
-
-        self.is_adding_profile = not self.is_adding_profile
-        if self.is_adding_profile:
+        # 进入新增：必要时关数据；取消新增：若进入前数据是开的则重新打开
+        if not self.is_adding_profile:
+            was_connected = self.is_data_connected
+            if was_connected and not await self._switch_data_connection(False, "可修改 APN"):
+                return
+            self._data_on_before_add = was_connected
+            self.is_adding_profile = True
             self.selected_profile_name = ""
             self.loaded_profile_name = ""
             self.pending_new_profile_index = self._next_profile_index()
             self.dropdown_profile.value = None
             self._fill_profile_form(self._empty_profile(pdp="IPv4"))
-        else:
-            self.pending_new_profile_index = ""
-            profile = self._find_manual_profile(self.selected_profile_name)
-            self._fill_profile_form(profile or self._empty_profile())
+            self.on_mode_change(None)  # 内含按钮文案 新增/取消
+            self._sync_add_profile_btn_text()
+            try:
+                self.btn_add_profile.update()
+            except Exception:
+                pass
+            self.update()
+            return
 
-        self.on_mode_change(None)
+        # 取消新增
+        self.is_adding_profile = False
+        self.pending_new_profile_index = ""
+        # 取消新增：尽量回到列表里第一个/原当前 APN
+        if not self.selected_profile_name and self.manual_profiles:
+            self.selected_profile_name = self.manual_profiles[0].get("name", "")
+        profile = self._find_manual_profile(self.selected_profile_name)
+        self._fill_profile_form(profile or self._empty_profile())
+
+        self.on_mode_change(None)  # 内含按钮文案 新增/取消
+        self._sync_add_profile_btn_text()
+        try:
+            self.btn_add_profile.update()
+        except Exception:
+            pass
         self.update()
+
+        restore_data = bool(getattr(self, "_data_on_before_add", False))
+        self._data_on_before_add = False
+        if restore_data:
+            await self._switch_data_connection(True, "已取消新增 APN")
+            try:
+                self.update()
+            except Exception:
+                pass
 
     async def on_set_default(self, e):
         was_connected = self.is_data_connected
@@ -3756,6 +4149,7 @@ class APNCard(ft.Container):
                 self._upsert_current_profile()
                 self.is_adding_profile = False
                 self.pending_new_profile_index = ""
+                self._data_on_before_add = False
                 self._refresh_profile_dropdown()
                 self.current_apn_name = self.selected_profile_name
                 self.txt_current_apn.value = self.current_apn_name or "--"
@@ -3797,6 +4191,7 @@ class APNCard(ft.Container):
             self._upsert_current_profile()
             self.is_adding_profile = False
             self.pending_new_profile_index = ""
+            self._data_on_before_add = False
             self.just_saved_manual_profile = True
             self._refresh_profile_dropdown()
             if editing_current:
@@ -3818,11 +4213,20 @@ class APNCard(ft.Container):
     async def on_delete(self, e):
         if self.is_adding_profile:
             self.is_adding_profile = False
+            self.pending_new_profile_index = ""
             self.selected_profile_name = self.manual_profiles[0].get("name", "") if self.manual_profiles else ""
             self._refresh_profile_dropdown()
             self._fill_profile_form(self._empty_profile(pdp="IPv4"))
             self.on_mode_change(None)
             self.update()
+            restore_data = bool(getattr(self, "_data_on_before_add", False))
+            self._data_on_before_add = False
+            if restore_data:
+                await self._switch_data_connection(True, "已取消新增 APN")
+                try:
+                    self.update()
+                except Exception:
+                    pass
             return
         if not self.selected_profile_name:
             show_toast(self.app_page, "请选择要删除的 APN 配置", False)
@@ -4020,7 +4424,7 @@ class FirewallCard(ft.Container):
             "0",
             expand=True,
         )
-        self.pf_policy.on_change = self.on_pf_policy_change
+        self.pf_policy.on_select = self.on_pf_policy_change
         self.btn_pf_save = create_button("应用", on_click=self.on_save_port_filter)
 
         # 规则表单（仅启用后显示）
@@ -4031,7 +4435,7 @@ class FirewallCard(ft.Container):
             "ipv4",
             expand=True,
         )
-        self.pf_ip_type.on_change = self.on_pf_ip_type_change
+        self.pf_ip_type.on_select = self.on_pf_ip_type_change
         self.pf_mac = create_text_field("MAC 地址", "", multiline=True, min_lines=1, max_lines=2, expand=True, hint_text="例如：00:1E:90:FF:FF:FF")
         self.pf_sip = create_text_field("源 IP 地址", "", multiline=True, min_lines=1, max_lines=3, expand=True)
         self.pf_dip = create_text_field("目的 IP 地址", "", multiline=True, min_lines=1, max_lines=3, expand=True)
@@ -4046,7 +4450,7 @@ class FirewallCard(ft.Container):
             "None",
             expand=True,
         )
-        self.pf_protocol.on_change = self.on_pf_protocol_change
+        self.pf_protocol.on_select = self.on_pf_protocol_change
         self.pf_action = create_dropdown(
             "操作",
             [ft.dropdown.Option("Accept", "放行"), ft.dropdown.Option("Drop", "丢弃")],
@@ -4263,14 +4667,16 @@ class FirewallCard(ft.Container):
             p.visible = False
 
     def _to_bool_flag(self, value) -> bool:
-        """设备开关字段统一解析：1/true/on/yes 视为开启"""
+        # 设备开关字段统一解析：1/true/on/yes 视为开启
         return str(value).strip().lower() in {"1", "true", "on", "yes", "enable", "enabled"}
 
-    async def sync_current_feature(self):
-        """登录/重登后，如果当前正停留在防火墙功能页，则重新查询并同步开关状态"""
-        if not self.visible or not self.current_feature:
+    async def sync_current_feature(self, force: bool = False):
+        # 按设备回显当前防火墙子页，右上角手动刷新时用，即使卡片暂时不可见也回写控件，丢弃未应用的本地修改
+        if not self.current_feature:
             return
-        await self.load_feature(self.current_feature)
+        if (not force) and (not self.visible):
+            return
+        await self.load_feature(self.current_feature, silent=True)
 
     def show_menu(self):
         self.current_feature = None
@@ -4381,7 +4787,7 @@ class FirewallCard(ft.Container):
                 show_toast(self.app_page, "防火墙配置加载失败", False)
 
     def _update_port_filter_visibility(self):
-        """关闭时只显示总开关；开启后显示默认策略、应用按钮和规则区"""
+        # 关闭时只显示总开关；开启后显示默认策略、应用按钮和规则区
         enabled = bool(self.pf_enable.value)
         # 应用按钮只在开启时显示，且只用于提交默认策略
         self.pf_policy.visible = enabled
@@ -4455,7 +4861,7 @@ class FirewallCard(ft.Container):
             pass
 
     async def _submit_port_filter_enable(self):
-        """开关只提交启用状态，并带上当前默认策略值（设备接口需要两个字段）"""
+        # 开关只提交启用状态，并带上当前默认策略值（设备接口需要两个字段）
         try:
             enabled = bool(self.pf_enable.value)
             ok = await self.api_client.post_cmd("BASIC_SETTING", {
@@ -4477,7 +4883,7 @@ class FirewallCard(ft.Container):
                 pass
 
     async def on_save_port_filter(self, e):
-        """应用按钮：仅在开启时提交默认策略"""
+        # 应用按钮：仅在开启时提交默认策略
         try:
             if not self.pf_enable.value:
                 show_toast(self.app_page, "请先开启 MAC/IP/端口过滤", False)
@@ -4576,7 +4982,7 @@ class FirewallCard(ft.Container):
         return mapping.get(v, mapping.get(raw, (raw or "--")))
 
     def _render_port_filter_rules(self):
-        """大屏横向一行；小屏标签/内容分行显示"""
+        # 大屏横向一行；小屏标签/内容分行显示
         self.pf_rule_checks = {}
         rows = []
         text_size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 13)
@@ -4816,7 +5222,7 @@ class FirewallCard(ft.Container):
         return rules
 
     def _render_port_forward_rules(self):
-        """大屏横向；小屏勾选框独立一行，信息在下方完整显示"""
+        # 大屏横向；小屏勾选框独立一行，信息在下方完整显示
         self.fw_rule_checks = {}
         rows = []
         text_size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 13)
@@ -5001,7 +5407,7 @@ class FirewallCard(ft.Container):
             show_toast(self.app_page, "转发规则删除异常", False)
 
     def _protocol_label(self, value: str) -> str:
-        """设备可能返回数字码或字符串，统一显示为下拉选项文案"""
+        # 设备可能返回数字码或字符串，统一显示为下拉选项文案
         raw = str(value or "").strip()
         v = raw.upper().replace("+", "&")
         mapping = {
@@ -5040,7 +5446,7 @@ class FirewallCard(ft.Container):
         return rules
 
     def _render_port_map_rules(self):
-        """大屏横向；小屏勾选框独立一行，信息在下方完整显示"""
+        # 大屏横向；小屏勾选框独立一行，信息在下方完整显示
         self.pm_rule_checks = {}
         rows = []
         text_size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 13)
@@ -5415,7 +5821,7 @@ class FirewallCard(ft.Container):
 
 
 
-# UI 组件拆分 - 接入模式卡片（OPERATION_MODE）
+# UI 组件拆分 - 接入模式卡片（OPERATION_MODE + 有线 WAN 配置）
 # ==========================================
 ACCESS_MODE_OPTIONS = [
     ("AUTO", "自动模式"),
@@ -5424,9 +5830,22 @@ ACCESS_MODE_OPTIONS = [
     ("MULTIWAN", "聚合模式"),
 ]
 
+# 有线宽带子连接模式（抓包 goformId）
+WIRED_CONN_OPTIONS = [
+    ("DHCP", "动态IP"),
+    ("STATIC", "静态IP"),
+    ("PPPOE", "PPPoE"),
+]
+
+# PPPoE 拨号方式：手动已抓包 manual_dial；自动常用 auto_dial
+WIRED_DIAL_OPTIONS = [
+    ("auto_dial", "自动"),
+    ("manual_dial", "手动"),
+]
+
 
 class AccessModeCard(ft.Container):
-    """接入模式：抓包确认 goformId=OPERATION_MODE, opMode=AUTO/PPPOE/PPP/MULTIWAN"""
+    # 接入模式 + 有线/无线宽带配置，接口均来自抓包
 
     def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
         super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12, visible=False)
@@ -5440,6 +5859,8 @@ class AccessModeCard(ft.Container):
         self.is_applying = False
         self._loading = False
         self.current_mode = "AUTO"
+        self.current_wired_conn = "DHCP"
+        self.current_wifi_sta = False
         self.background_tasks: Set[asyncio.Task] = set()
         self.build_ui()
 
@@ -5473,6 +5894,8 @@ class AccessModeCard(ft.Container):
             "AUTO",
             expand=True,
         )
+        # Flet 0.85+ Dropdown 用 on_select
+        self.mode_dropdown.on_select = self.on_access_mode_select
         self.txt_mode_tip = ft.Text(
             "应用后设备将重启",
             size=12,
@@ -5480,7 +5903,130 @@ class AccessModeCard(ft.Container):
             no_wrap=False,
         )
         self.txt_current = ft.Text("当前: --", size=12, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=False)
-        self.btn_apply = create_button("应用", on_click=self.on_apply_mode, expand=True)
+        self.btn_apply_mode = create_button("应用", on_click=self.on_apply_mode, expand=True)
+
+        # ---- 有线宽带：联网设置 WAN/LAN ----
+        self.txt_wired_title = ft.Text(
+            "联网设置（有线宽带）",
+            size=15,
+            weight=ft.FontWeight.BOLD,
+            color=ft.Colors.ON_SURFACE,
+        )
+        self.txt_wired_conn_label = ft.Text("连接模式", color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.wired_conn_dropdown = create_dropdown(
+            "",
+            [ft.dropdown.Option(k, v) for k, v in WIRED_CONN_OPTIONS],
+            "DHCP",
+            expand=True,
+        )
+        self.wired_conn_dropdown.on_select = self.on_wired_conn_select
+
+        # 静态 IP 字段
+        self.static_ip = create_text_field("IP 地址", "", expand=True)
+        self.static_mask = create_text_field("子网掩码", "255.255.255.0", expand=True)
+        self.static_gw = create_text_field("默认网关", "", expand=True)
+        self.static_dns1 = create_text_field("首选 DNS", "", expand=True)
+        self.static_dns2 = create_text_field("备用 DNS", "", expand=True)
+        self.static_box = ft.Column(
+            [self.static_ip, self.static_mask, self.static_gw, self.static_dns1, self.static_dns2],
+            spacing=10,
+            visible=False,
+        )
+
+        # PPPoE 字段
+        self.pppoe_user = create_text_field("用户名", "", expand=True)
+        self.pppoe_pwd = create_text_field("密码", "", password=True, can_reveal_password=True, expand=True)
+        self.txt_dial_label = ft.Text("拨号方式", color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.pppoe_dial = create_dropdown(
+            "",
+            [ft.dropdown.Option(k, v) for k, v in WIRED_DIAL_OPTIONS],
+            "manual_dial",
+            expand=True,
+        )
+        self.pppoe_box = ft.Column(
+            [self.pppoe_user, self.pppoe_pwd, self.txt_dial_label, self.pppoe_dial],
+            spacing=10,
+            visible=False,
+        )
+
+        self.txt_wired_tip = ft.Text(
+            "有线模式下可配置动态IP / 静态IP / PPPoE（需网线接入）",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.txt_wired_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=False)
+        self.btn_apply_wired = create_button("应用有线配置", on_click=self.on_apply_wired, expand=True)
+
+        self.wired_section = ft.Column(
+            [
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
+                self.txt_wired_title,
+                self.txt_wired_tip,
+                self.txt_wired_conn_label,
+                self.wired_conn_dropdown,
+                self.static_box,
+                self.pppoe_box,
+                self.txt_wired_status,
+                self.btn_apply_wired,
+            ],
+            spacing=10,
+            visible=False,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+
+        # ---- 无线宽带：Internet Wi-Fi（无红色标题；提示在开关下方）----
+        self.txt_wifi_sta_label = ft.Text("Internet Wi-Fi", color=ft.Colors.ON_SURFACE, no_wrap=False)
+        self.wifi_sta_switch = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_wifi_sta_switch_change,
+        )
+        self.wifi_sta_row = ft.Row(
+            [self.wifi_sta_switch, self.txt_wifi_sta_label],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+        )
+        self.txt_wifi_sta_tip = ft.Text(
+            "如果该功能开启，当无线网络断开时，可以通过WiFi连接提供路由器的internet访问",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.btn_wifi_scan = create_button("扫描", on_click=self.on_wifi_sta_scan, expand=True, height=40)
+        self.txt_wifi_list_title = ft.Text("可用热点（点名称连接/断开）", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
+        # 大屏一行 2~3 个：sm 单列，md 双列，lg 三列
+        self.wifi_hotspot_list = ft.ResponsiveRow(spacing=8, run_spacing=6)
+        self.txt_wifi_list_empty = ft.Text("暂无热点，请点击扫描", size=11, color=ft.Colors.ON_SURFACE_VARIANT, no_wrap=False)
+        self.wifi_features_box = ft.Column(
+            [
+                self.btn_wifi_scan,
+                self.txt_wifi_list_title,
+                self.txt_wifi_list_empty,
+                self.wifi_hotspot_list,
+            ],
+            spacing=6,
+            visible=False,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+        self.scan_hotspots: List[Dict] = []
+        self.saved_profiles: List[Dict] = []
+        self.is_wifi_scanning = False
+        self.is_wifi_hotspot_busy = False
+
+        self.wireless_section = ft.Column(
+            [
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
+                self.wifi_sta_row,
+                self.txt_wifi_sta_tip,
+                self.wifi_features_box,
+            ],
+            spacing=10,
+            visible=False,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
 
         self.content = ft.Column(
             [
@@ -5492,7 +6038,9 @@ class AccessModeCard(ft.Container):
                 self.mode_dropdown,
                 self.txt_mode_tip,
                 self.txt_current,
-                self.btn_apply,
+                self.btn_apply_mode,
+                self.wired_section,
+                self.wireless_section,
             ],
             spacing=12,
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -5501,6 +6049,13 @@ class AccessModeCard(ft.Container):
     def _mode_label(self, code: str) -> str:
         code = str(code or "").strip().upper()
         for k, v in ACCESS_MODE_OPTIONS:
+            if k == code:
+                return v
+        return code or "--"
+
+    def _wired_conn_label(self, code: str) -> str:
+        code = str(code or "").strip().upper()
+        for k, v in WIRED_CONN_OPTIONS:
             if k == code:
                 return v
         return code or "--"
@@ -5514,6 +6069,9 @@ class AccessModeCard(ft.Container):
             return "AUTO"
         if raw in ("PPPOE", "PPP", "MULTIWAN"):
             return raw
+        # 有线子模式有时直接落在 opms_wan_mode：DHCP/STATIC 仍算有线宽带
+        if raw in ("DHCP", "STATIC"):
+            return "PPPOE"
         if auto.startswith("AUTO") or raw in ("AUTO_LTE_GATEWAY", "AUTO_PPPOE", "AUTO_DHCP", "AUTO_STATIC"):
             return "AUTO"
         for k, _ in ACCESS_MODE_OPTIONS:
@@ -5521,15 +6079,104 @@ class AccessModeCard(ft.Container):
                 return k
         return "AUTO"
 
+    def _normalize_wired_conn(self, res: dict) -> str:
+        raw = str(res.get("opms_wan_mode", "") or "").strip().upper()
+        auto = str(res.get("opms_wan_auto_mode", "") or "").strip().upper()
+        val = auto if raw in ("AUTO", "") and auto else raw
+        val = val.upper()
+        if "PPPOE" in val:
+            return "PPPOE"
+        if "STATIC" in val:
+            return "STATIC"
+        if "DHCP" in val:
+            return "DHCP"
+        # 状态字段兜底
+        if str(res.get("static_wan_status", "")).strip() == "1":
+            return "STATIC"
+        if str(res.get("dhcp_wan_status", "")).strip() == "1":
+            return "DHCP"
+        if str(res.get("pppoe_status", "")).strip():
+            return "PPPOE"
+        return self.current_wired_conn or "DHCP"
+
+    def _sync_wired_fields_visibility(self):
+        conn = str(self.wired_conn_dropdown.value or "DHCP").upper()
+        self.static_box.visible = conn == "STATIC"
+        self.pppoe_box.visible = conn == "PPPOE"
+
+    def _sync_wired_section_visibility(self):
+        # 选中/当前为有线宽带时显示联网设置
+        selected = str(self.mode_dropdown.value or "").upper()
+        show = selected == "PPPOE" or self.current_mode == "PPPOE"
+        self.wired_section.visible = show
+        if show:
+            self._sync_wired_fields_visibility()
+
+    def _sync_wireless_section_visibility(self):
+        selected = str(self.mode_dropdown.value or "").upper()
+        show = selected == "PPP" or self.current_mode == "PPP"
+        self.wireless_section.visible = show
+
     def _sync_data_ui(self):
+        wired = bool(self.current_mode == "PPPOE" or self.api_client.is_wired_access())
+        if wired:
+            self.is_data_connected = False
         self.data_switch.value = self.is_data_connected
-        self.data_switch.disabled = self.is_switching_data or self.is_applying
-        can_edit = (not self.is_data_connected) and (not self.is_switching_data) and (not self.is_applying)
-        self.mode_dropdown.disabled = not can_edit
-        self.btn_apply.disabled = not can_edit
-        # 未点应用时若重新锁定（如打开数据），下拉回退到设备真实模式
-        if not can_edit and self.current_mode:
+        # 有线宽带：数据开关锁定不可动
+        self.data_switch.disabled = True if wired else (self.is_switching_data or self.is_applying)
+        # 接入方式切换仍要求断数据；有线子配置在有线模式下可用
+        can_edit_mode = (not self.is_data_connected) and (not self.is_switching_data) and (not self.is_applying)
+        if wired:
+            # 有线时数据视为断开，允许改接入方式（切回自动等）
+            can_edit_mode = (not self.is_switching_data) and (not self.is_applying)
+        self.mode_dropdown.disabled = not can_edit_mode
+        self.btn_apply_mode.disabled = not can_edit_mode
+
+        can_edit_wired = (not self.is_switching_data) and (not self.is_applying) and (
+            str(self.mode_dropdown.value or "").upper() == "PPPOE" or self.current_mode == "PPPOE"
+        )
+        self.wired_conn_dropdown.disabled = not can_edit_wired
+        self.btn_apply_wired.disabled = not can_edit_wired
+        for ctrl in [
+            self.static_ip, self.static_mask, self.static_gw, self.static_dns1, self.static_dns2,
+            self.pppoe_user, self.pppoe_pwd, self.pppoe_dial,
+        ]:
+            ctrl.disabled = not can_edit_wired
+
+        can_edit_wifi_sta = (not self.is_switching_data) and (not self.is_applying) and (
+            str(self.mode_dropdown.value or "").upper() == "PPP" or self.current_mode == "PPP"
+        )
+        busy = bool(getattr(self, "is_wifi_scanning", False) or getattr(self, "is_wifi_hotspot_busy", False))
+        if hasattr(self, "wifi_sta_switch"):
+            self.wifi_sta_switch.disabled = (not can_edit_wifi_sta) or busy
+        switch_on = bool(getattr(self, "wifi_sta_switch", None) and self.wifi_sta_switch.value)
+        if hasattr(self, "wifi_features_box"):
+            self.wifi_features_box.visible = switch_on and (
+                str(self.mode_dropdown.value or "").upper() == "PPP" or self.current_mode == "PPP"
+            )
+        if hasattr(self, "btn_wifi_scan"):
+            self.btn_wifi_scan.disabled = (not can_edit_wifi_sta) or (not switch_on) or busy
+
+        if not can_edit_mode and self.current_mode:
             self.mode_dropdown.value = self.current_mode
+        self._sync_wired_section_visibility()
+        self._sync_wireless_section_visibility()
+
+    def on_access_mode_select(self, e=None):
+        self._sync_wired_section_visibility()
+        self._sync_wireless_section_visibility()
+        self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def on_wired_conn_select(self, e=None):
+        self._sync_wired_fields_visibility()
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def update_realtime(self, status: "RealtimeStatus"):
         if self.is_switching_data or self.is_applying:
@@ -5558,7 +6205,6 @@ class AccessModeCard(ft.Container):
                 self.is_data_connected = target_on
                 self.set_global_status(f"数据连接已{action}", ft.Colors.PRIMARY)
                 show_toast(self.app_page, f"数据连接已{action}", True)
-                # 数据状态变化后，按设备真实接入模式回显（丢弃未应用选择）
                 await self.load(silent=True)
             else:
                 self.set_global_status(f"数据连接{action}失败", ft.Colors.ERROR)
@@ -5585,6 +6231,15 @@ class AccessModeCard(ft.Container):
             except Exception:
                 pass
             return
+        if self.current_mode == "PPPOE" or self.api_client.is_wired_access():
+            self.data_switch.value = False
+            self.data_switch.disabled = True
+            try:
+                self.data_switch.update()
+            except Exception:
+                pass
+            show_toast(self.app_page, "有线宽带模式下不可切换数据连接", False)
+            return
         target_on = bool(self.data_switch.value)
         self.data_switch.value = self.is_data_connected
         try:
@@ -5599,7 +6254,31 @@ class AccessModeCard(ft.Container):
             except Exception:
                 pass
 
-    async def load(self, silent: bool = False):
+    def _fill_wired_form(self, res: dict):
+        conn = self._normalize_wired_conn(res)
+        self.current_wired_conn = conn
+        self.wired_conn_dropdown.value = conn
+        self.static_ip.value = str(res.get("static_wan_ipaddr", "") or "")
+        self.static_mask.value = str(res.get("static_wan_netmask", "") or "") or "255.255.255.0"
+        self.static_gw.value = str(res.get("static_wan_gateway", "") or "")
+        self.static_dns1.value = str(res.get("static_wan_primary_dns", "") or "")
+        self.static_dns2.value = str(res.get("static_wan_secondary_dns", "") or "")
+        self.pppoe_user.value = str(res.get("pppoe_username", "") or "")
+        # 密码设备可能不回显，有返回则填入
+        pwd = str(res.get("pppoe_password", "") or "")
+        if pwd:
+            self.pppoe_pwd.value = pwd
+        dial = str(res.get("pppoe_dial_mode", "") or res.get("dial_mode", "") or "").strip()
+        if dial in ("auto_dial", "manual_dial"):
+            self.pppoe_dial.value = dial
+        elif "manual" in dial.lower():
+            self.pppoe_dial.value = "manual_dial"
+        elif "auto" in dial.lower():
+            self.pppoe_dial.value = "auto_dial"
+        self.txt_wired_status.value = f"当前连接模式: {self._wired_conn_label(conn)}"
+        self._sync_wired_fields_visibility()
+
+    async def load(self, silent: bool = False, auto_scan: bool = True):
         if self._loading:
             return
         self._loading = True
@@ -5611,16 +6290,41 @@ class AccessModeCard(ft.Container):
             self.current_mode = mode
             self.mode_dropdown.value = mode
             self.txt_current.value = f"当前: {self._mode_label(mode)} ({mode})"
+            self._fill_wired_form(res or {})
+            self._fill_wifi_sta_form(res or {})
 
             status = str((res or {}).get("ppp_status", "") or "").lower()
             status_clean = status.replace("disconnected", "off")
             is_connected = "connected" in status_clean
             is_disconnected = "off" in status_clean and not is_connected
-            if is_connected:
+            if mode == "PPPOE" or self.api_client.is_wired_access():
+                self.is_data_connected = False
+            elif is_connected:
                 self.is_data_connected = True
             elif is_disconnected:
                 self.is_data_connected = False
             self._sync_data_ui()
+            # 无线宽带 + Internet Wi-Fi 开启：回显已保存配置，并自动扫描可用热点
+            if mode == "PPP" and self.current_wifi_sta:
+                await self._refresh_profiles_silent()
+                # 用已保存配置先标出已连接项，避免必须先扫一次才有状态
+                if self.saved_profiles and not self.scan_hotspots:
+                    self.scan_hotspots = [
+                        {
+                            "fromProvider": p.get("fromProvider") or "0",
+                            "connectStatus": p.get("connectStatus") or "0",
+                            "ssid": p.get("ssid") or "",
+                            "signal": p.get("signal") or "0",
+                            "channel": "",
+                            "authMode": p.get("authMode") or "OPEN",
+                            "encryptType": p.get("encryptType") or "NONE",
+                        }
+                        for p in self.saved_profiles
+                        if str(p.get("ssid") or "").strip()
+                    ]
+                    self._render_hotspot_list()
+                if auto_scan and not self.is_wifi_scanning and not self.is_wifi_hotspot_busy:
+                    spawn_background_task(self, self._auto_scan_hotspots_silent())
             if not silent:
                 self.set_global_status("接入模式已同步", ft.Colors.PRIMARY)
             try:
@@ -5635,9 +6339,11 @@ class AccessModeCard(ft.Container):
         finally:
             self._loading = False
 
-    async def sync_current(self):
-        if self.visible:
-            await self.load(silent=True)
+    async def sync_current(self, force: bool = False):
+        # 按设备回显接入方式，force=True 时手动刷新强制回写
+        if (not force) and (not self.visible):
+            return
+        await self.load(silent=True)
 
     async def on_apply_mode(self, e=None):
         if self.is_applying or self.is_switching_data:
@@ -5666,7 +6372,7 @@ class AccessModeCard(ft.Container):
                 self.current_mode = mode
                 self.txt_current.value = f"当前: {self._mode_label(mode)} ({mode})"
                 self.set_global_status(f"接入模式已切换为 {self._mode_label(mode)}", ft.Colors.PRIMARY)
-                show_toast(self.app_page, f"接入模式已切换为 {self._mode_label(mode)}", True)
+                show_toast(self.app_page, f"接入模式已切换为 {self._mode_label(mode)}（设备可能重启）", True)
                 await self.load(silent=True)
             else:
                 self.set_global_status("接入模式切换失败", ft.Colors.ERROR)
@@ -5683,6 +6389,861 @@ class AccessModeCard(ft.Container):
             except Exception:
                 pass
 
+    def _valid_ipv4(self, value: str) -> bool:
+        try:
+            ipaddress.IPv4Address((value or "").strip())
+            return True
+        except Exception:
+            return False
+
+    def _fill_wifi_sta_form(self, res: dict):
+        raw = str(res.get("wifi_sta_connection", "") or "").strip().lower()
+        enabled = raw in ("1", "true", "on", "yes")
+        self.current_wifi_sta = enabled
+        if hasattr(self, "wifi_sta_switch"):
+            self.wifi_sta_switch.value = enabled
+
+    async def on_wifi_sta_switch_change(self, e=None):
+        # 开关即生效，不再单独点应用
+        if self.is_applying or self.is_switching_data or getattr(self, "is_wifi_scanning", False) or getattr(self, "is_wifi_hotspot_busy", False):
+            # 回填过程中禁用/busy 时也可能触发，忽略
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+            return
+        enable = bool(self.wifi_sta_switch.value)
+        # 回显赋值也可能触发 on_select：值未变则只刷新 UI
+        if enable == bool(self.current_wifi_sta):
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+            return
+        await self.on_apply_wifi_sta()
+
+    @staticmethod
+    def _norm_auth(auth: str) -> str:
+        a = (auth or "OPEN").strip().upper().replace("-", "").replace("_", "")
+        if a in ("WPA2PSK", "WPAPSK", "WPAPSKWPA2PSK", "WPA3SAE", "WPA2PSKWPA3SAE", "SHARED", "OPEN"):
+            return a
+        if "WPA2" in a and "PSK" in a:
+            return "WPA2PSK"
+        if "WPA" in a and "PSK" in a:
+            return "WPAPSK"
+        return a or "OPEN"
+
+    @staticmethod
+    def _norm_encrypt(enc: str, auth: str = "") -> str:
+        e = (enc or "NONE").strip().upper()
+        if e in ("AES", "CCMP"):
+            return "CCMP"
+        if e in ("TKIP", "TKIPCCMP", "NONE", "WEP"):
+            return "TKIPCCMP" if e == "TKIPCCMP" else e
+        a = AccessModeCard._norm_auth(auth)
+        if a in ("WPA2PSK", "WPAPSK", "WPAPSKWPA2PSK", "WPA3SAE", "WPA2PSKWPA3SAE"):
+            return "CCMP"
+        return e or "NONE"
+
+    @staticmethod
+    def _parse_scan_list(res: dict) -> List[Dict]:
+        if not res:
+            return []
+        finish = str(res.get("scan_finish", "") or "").strip()
+        if finish == "0":
+            return []
+        items: List[Dict] = []
+        for key in ("EX_APLIST", "EX_APLIST1"):
+            raw = str(res.get(key, "") or "")
+            if not raw:
+                continue
+            for part in raw.split(";"):
+                cols = part.split(",")
+                if len(cols) < 7 or not cols[0]:
+                    continue
+                items.append(
+                    {
+                        "fromProvider": cols[0],
+                        "connectStatus": cols[1],
+                        "ssid": cols[2],
+                        "signal": cols[3],
+                        "channel": cols[4],
+                        "authMode": AccessModeCard._norm_auth(cols[5]),
+                        "encryptType": AccessModeCard._norm_encrypt(cols[6], cols[5]),
+                    }
+                )
+        best: Dict[str, Dict] = {}
+        for it in items:
+            ssid = it.get("ssid") or ""
+            if not ssid:
+                continue
+            try:
+                sig = int(str(it.get("signal") or "0"))
+            except Exception:
+                sig = 0
+            old = best.get(ssid)
+            if not old:
+                best[ssid] = it
+                continue
+            try:
+                old_sig = int(str(old.get("signal") or "0"))
+            except Exception:
+                old_sig = 0
+            if sig >= old_sig:
+                best[ssid] = it
+        return list(best.values())
+
+    @staticmethod
+    def _parse_profiles(res: dict) -> List[Dict]:
+        if not res:
+            return []
+        blobs = []
+        for key in (
+            "wifi_profile",
+            "wifi_profile1",
+            "wifi_profile2",
+            "wifi_profile3",
+            "wifi_profile4",
+            "wifi_profile5",
+        ):
+            raw = str(res.get(key, "") or "").strip()
+            if raw:
+                blobs.append(raw)
+        items: List[Dict] = []
+        for blob in blobs:
+            for part in blob.split(";"):
+                cols = part.split(",")
+                if len(cols) < 9 or not cols[0]:
+                    continue
+                items.append(
+                    {
+                        "profileName": cols[0],
+                        "fromProvider": cols[1],
+                        "connectStatus": cols[2],
+                        "signal": cols[3],
+                        "ssid": cols[4],
+                        "authMode": AccessModeCard._norm_auth(cols[5]),
+                        "encryptType": AccessModeCard._norm_encrypt(cols[6], cols[5]),
+                        "password": cols[7] if cols[7] != "0" else "",
+                        "keyID": cols[8],
+                    }
+                )
+        return items
+
+    @staticmethod
+    def _encode_profile(p: Dict) -> str:
+        pwd = p.get("password") if p.get("password") not in (None, "") else "0"
+        return ",".join(
+            [
+                str(p.get("profileName") or ""),
+                str(p.get("fromProvider") or "0"),
+                str(p.get("connectStatus") or "0"),
+                str(p.get("signal") or "0"),
+                str(p.get("ssid") or ""),
+                AccessModeCard._norm_auth(str(p.get("authMode") or "OPEN")),
+                AccessModeCard._norm_encrypt(str(p.get("encryptType") or "NONE"), str(p.get("authMode") or "")),
+                str(pwd),
+                str(p.get("keyID") or "0"),
+            ]
+        )
+
+    @staticmethod
+    def _new_profile_name() -> str:
+        return f"{random.randint(1000, 9999)}"
+
+    def _find_profile_by_ssid(self, ssid: str) -> Optional[Dict]:
+        ssid = str(ssid or "")
+        for p in getattr(self, "saved_profiles", []) or []:
+            if str(p.get("ssid") or "") == ssid:
+                return p
+        return None
+
+    def _render_hotspot_list(self):
+        if not hasattr(self, "wifi_hotspot_list"):
+            return
+        self.wifi_hotspot_list.controls.clear()
+        items = list(getattr(self, "scan_hotspots", []) or [])
+        if hasattr(self, "txt_wifi_list_empty"):
+            self.txt_wifi_list_empty.visible = not bool(items)
+        can_tap = (not self.is_switching_data) and (not self.is_applying) and (
+            str(self.mode_dropdown.value or "").upper() == "PPP" or self.current_mode == "PPP"
+        )
+        is_ultra = bool(getattr(self, "is_ultra_small_layout", False))
+        is_small = bool(getattr(self, "is_small_layout", False) or is_ultra)
+        # 小屏单列完整显示；中屏 2 列；大屏 3 列
+        if is_small:
+            item_col = {"xs": 12, "sm": 12, "md": 12, "lg": 12, "xl": 12}
+        else:
+            item_col = {"xs": 12, "sm": 12, "md": 6, "lg": 4, "xl": 4}
+        title_size = 11 if is_ultra else (12 if is_small else 14)
+        action_size = 9 if is_ultra else (10 if is_small else 11)
+        cell_pad = ft.Padding(left=8, top=8, right=8, bottom=8) if is_small else ft.Padding(left=10, top=12, right=10, bottom=12)
+        for ap in items:
+            ap_data = dict(ap or {})
+            ssid = str(ap_data.get("ssid") or "")
+            status = str(ap_data.get("connectStatus") or "")
+            connected = status in ("1", "2", "connected", "Connecting")
+            prof = self._find_profile_by_ssid(ssid)
+            if prof and str(prof.get("connectStatus") or "") in ("1", "2"):
+                connected = True
+            title = ssid or "(隐藏SSID)"
+            title_color = ft.Colors.PRIMARY if connected else ft.Colors.ON_SURFACE
+            action_txt = "断开" if connected else "连接"
+            action_color = ft.Colors.PRIMARY if connected else ft.Colors.ON_SURFACE_VARIANT
+            row_click = (
+                self._make_disconnect_handler()
+                if connected
+                else self._make_connect_handler(ap_data)
+            ) if can_tap else None
+            cell = ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            title,
+                            size=title_size,
+                            weight=ft.FontWeight.W_600,
+                            color=title_color,
+                            no_wrap=False,  # 小屏允许换行显示完整 SSID
+                            max_lines=3,
+                            overflow=ft.TextOverflow.CLIP,
+                        ),
+                        ft.Text(
+                            action_txt,
+                            size=action_size,
+                            color=action_color,
+                            no_wrap=True,
+                        ),
+                    ],
+                    spacing=2,
+                    tight=True,
+                    expand=True,
+                ),
+                padding=cell_pad,
+                on_click=row_click,
+                ink=True,
+                border_radius=8,
+                border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                bgcolor=ft.Colors.SURFACE,
+                col=item_col,
+            )
+            self.wifi_hotspot_list.controls.append(cell)
+
+    def _run_coro(self, factory):
+        # 动态按钮/弹窗回调启动协程
+        async def _job():
+            await factory()
+
+        try:
+            if hasattr(self.app_page, "run_task"):
+                return self.app_page.run_task(_job)
+        except Exception as ex:
+            logger.error(f"run_task 失败: {ex}", exc_info=DEBUG_MODE)
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.create_task(_job())
+        except Exception:
+            pass
+        try:
+            return asyncio.create_task(_job())
+        except Exception as ex:
+            logger.error(f"启动协程失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "操作无法启动", False)
+
+    def _make_connect_handler(self, ap: Dict):
+        ap_copy = dict(ap or {})
+
+        async def _handler(e=None):
+            await self.on_wifi_hotspot_connect(ap_copy)
+
+        return _handler
+
+    def _make_disconnect_handler(self):
+        async def _handler(e=None):
+            await self.on_wifi_hotspot_disconnect()
+
+        return _handler
+
+    def _close_dialog(self, dlg):
+        try:
+            if getattr(dlg, "open", False):
+                self.app_page.pop_dialog()
+        except Exception:
+            try:
+                dlg.open = False
+                dlg.update()
+            except Exception:
+                pass
+
+    def _dialog_width(self) -> float:
+        # 弹窗内容区宽度：小屏也保证够宽可点
+        try:
+            page_w = float(getattr(self.app_page, "width", None) or 0)
+        except Exception:
+            page_w = 0
+        if page_w <= 1:
+            page_w = 400.0
+        # 至少 280，最多 340，两侧留边
+        return max(280.0, min(page_w - 32.0, 340.0))
+
+    def _show_password_dialog(self, title: str, default_pwd: str = "", on_ok=None):
+        # 整块内容自绘：小字号 + 密码可换行
+        dlg_w = self._dialog_width()
+        pwd_field = ft.TextField(
+            value=default_pwd or "",
+            password=False,
+            can_reveal_password=False,
+            text_size=12,
+            color=ft.Colors.ON_SURFACE,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            border_color=ft.Colors.ON_SURFACE_VARIANT,
+            focused_border_color=ft.Colors.PRIMARY,
+            content_padding=ft.Padding(left=10, top=10, right=10, bottom=10),
+            hint_text="请输入密码",
+            hint_style=ft.TextStyle(color=ft.Colors.ON_SURFACE_VARIANT, size=11),
+            multiline=True,
+            min_lines=1,
+            max_lines=4,
+            shift_enter=True,
+        )
+
+        def close_dlg(ev=None):
+            self._close_dialog(dlg)
+
+        def confirm_dlg(ev=None):
+            pwd = (pwd_field.value or "").replace("\n", "").replace("\r", "")
+            self._close_dialog(dlg)
+            if on_ok:
+                self._run_coro(lambda: on_ok(pwd))
+
+        body = ft.Container(
+            width=dlg_w,
+            padding=ft.Padding(left=14, top=12, right=14, bottom=8),
+            content=ft.Column(
+                [
+                    ft.Text(
+                        title,
+                        size=12,
+                        weight=ft.FontWeight.W_500,
+                        color=ft.Colors.ON_SURFACE,
+                        text_align=ft.TextAlign.CENTER,
+                        no_wrap=True,
+                    ),
+                    pwd_field,
+                    ft.Container(height=4),
+                    ft.Row(
+                        [
+                            ft.Container(
+                                content=ft.TextButton(
+                                    "否",
+                                    on_click=close_dlg,
+                                    style=ft.ButtonStyle(
+                                        color=ft.Colors.ON_SURFACE_VARIANT,
+                                        text_style=ft.TextStyle(size=13),
+                                    ),
+                                ),
+                                expand=True,
+                                alignment=ft.Alignment(0, 0),
+                                height=40,
+                            ),
+                            ft.Container(
+                                content=ft.TextButton(
+                                    "是",
+                                    on_click=confirm_dlg,
+                                    style=ft.ButtonStyle(
+                                        color=ft.Colors.PRIMARY,
+                                        text_style=ft.TextStyle(size=13),
+                                    ),
+                                ),
+                                expand=True,
+                                alignment=ft.Alignment(0, 0),
+                                height=40,
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                spacing=8,
+                tight=True,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            ),
+        )
+
+        dlg = ft.AlertDialog(
+            bgcolor=ft.Colors.SURFACE,
+            modal=True,
+            title=None,
+            title_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            content_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            actions_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            inset_padding=ft.Padding(left=12, top=24, right=12, bottom=24),
+            content=body,
+            on_dismiss=close_dlg,
+        )
+        try:
+            self.app_page.show_dialog(dlg)
+        except Exception as ex:
+            logger.error(f"弹出密码框失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "无法弹出密码框", False)
+
+    def _show_confirm_dialog(self, message: str, on_ok=None):
+        dlg_w = self._dialog_width()
+
+        def close_dlg(ev=None):
+            self._close_dialog(dlg)
+
+        def confirm_dlg(ev=None):
+            self._close_dialog(dlg)
+            if on_ok:
+                self._run_coro(lambda: on_ok())
+
+        body = ft.Container(
+            width=dlg_w,
+            padding=ft.Padding(left=14, top=14, right=14, bottom=8),
+            content=ft.Column(
+                [
+                    ft.Text(
+                        message,
+                        size=13,
+                        color=ft.Colors.ON_SURFACE,
+                        text_align=ft.TextAlign.CENTER,
+                        no_wrap=False,
+                    ),
+                    ft.Container(height=6),
+                    ft.Row(
+                        [
+                            ft.Container(
+                                content=ft.TextButton(
+                                    "否",
+                                    on_click=close_dlg,
+                                    style=ft.ButtonStyle(
+                                        color=ft.Colors.ON_SURFACE_VARIANT,
+                                        text_style=ft.TextStyle(size=13),
+                                    ),
+                                ),
+                                expand=True,
+                                alignment=ft.Alignment(0, 0),
+                                height=40,
+                            ),
+                            ft.Container(
+                                content=ft.TextButton(
+                                    "是",
+                                    on_click=confirm_dlg,
+                                    style=ft.ButtonStyle(
+                                        color=ft.Colors.PRIMARY,
+                                        text_style=ft.TextStyle(size=13),
+                                    ),
+                                ),
+                                expand=True,
+                                alignment=ft.Alignment(0, 0),
+                                height=40,
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                spacing=6,
+                tight=True,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            ),
+        )
+
+        dlg = ft.AlertDialog(
+            bgcolor=ft.Colors.SURFACE,
+            modal=True,
+            title=None,
+            title_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            content_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            actions_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            inset_padding=ft.Padding(left=12, top=24, right=12, bottom=24),
+            content=body,
+            on_dismiss=close_dlg,
+        )
+        try:
+            self.app_page.show_dialog(dlg)
+        except Exception as ex:
+            logger.error(f"弹出确认框失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "无法弹出确认框", False)
+
+    async def _refresh_profiles_silent(self):
+        try:
+            res = await self.api_client.get_wifi_sta_profiles()
+            self.saved_profiles = self._parse_profiles(res or {})
+        except Exception as ex:
+            logger.error(f"读取热点配置异常: {ex}", exc_info=DEBUG_MODE)
+
+    async def _auto_scan_hotspots_silent(self):
+        # 登录/回显后后台自动扫描，不弹过多提示
+        try:
+            await self._run_wifi_sta_scan(show_toasts=False)
+        except Exception as ex:
+            logger.error(f"自动扫描热点异常: {ex}", exc_info=DEBUG_MODE)
+
+    async def _run_wifi_sta_scan(self, show_toasts: bool = True) -> bool:
+        if self.is_applying or self.is_switching_data or self.is_wifi_scanning or self.is_wifi_hotspot_busy:
+            return False
+        if self.current_mode != "PPP":
+            if show_toasts:
+                show_toast(self.app_page, "请先将接入方式切换为无线宽带并应用", False)
+            return False
+        if not bool(getattr(self, "wifi_sta_switch", None) and self.wifi_sta_switch.value):
+            if show_toasts:
+                show_toast(self.app_page, "请先开启 Internet Wi-Fi", False)
+            return False
+        self.is_wifi_scanning = True
+        self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+        if show_toasts:
+            show_toast(self.app_page, "正在扫描热点...", True)
+        try:
+            ok = await self.api_client.wifi_sta_scan_refresh()
+            if not ok:
+                if show_toasts:
+                    show_toast(self.app_page, "扫描启动失败", False)
+                return False
+            found = []
+            for _ in range(30):
+                await asyncio.sleep(1.0)
+                res = await self.api_client.get_wifi_sta_scan_list()
+                finish = str((res or {}).get("scan_finish", "") or "").strip()
+                if finish == "0":
+                    continue
+                found = self._parse_scan_list(res or {})
+                break
+            self.scan_hotspots = found
+            await self._refresh_profiles_silent()
+            self._render_hotspot_list()
+            if show_toasts:
+                if found:
+                    show_toast(self.app_page, f"扫描完成，发现 {len(found)} 个热点", True)
+                else:
+                    show_toast(self.app_page, "扫描完成，未发现热点", False)
+            return bool(found)
+        except Exception as ex:
+            logger.error(f"扫描热点异常: {ex}", exc_info=DEBUG_MODE)
+            if show_toasts:
+                show_toast(self.app_page, "扫描异常", False)
+            return False
+        finally:
+            self.is_wifi_scanning = False
+            self._render_hotspot_list()
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    async def on_wifi_sta_scan(self, e=None):
+        await self._run_wifi_sta_scan(show_toasts=True)
+
+    async def on_wifi_hotspot_connect(self, ap: Dict):
+        if self.is_applying or self.is_switching_data or self.is_wifi_hotspot_busy:
+            show_toast(self.app_page, "请稍候再试", False)
+            return
+        if self.current_mode != "PPP":
+            show_toast(self.app_page, "请先将接入方式切换为无线宽带并应用", False)
+            return
+        ssid = str((ap or {}).get("ssid") or "")
+        if not ssid:
+            show_toast(self.app_page, "无效热点", False)
+            return
+        auth = self._norm_auth(str((ap or {}).get("authMode") or "OPEN"))
+        need_pwd = auth not in ("OPEN",)
+        prof = self._find_profile_by_ssid(ssid)
+        default_pwd = str((prof or {}).get("password") or "")
+
+        async def after_pwd(password: str):
+            await self._do_connect_flow(ap, password)
+
+        if need_pwd:
+            self._show_password_dialog("WiFi 密码", default_pwd=default_pwd, on_ok=after_pwd)
+        else:
+            await self._do_connect_flow(ap, "")
+
+    async def _do_connect_flow(self, ap: Dict, password: str):
+        ssid = str((ap or {}).get("ssid") or "")
+        auth = self._norm_auth(str((ap or {}).get("authMode") or "OPEN"))
+        enc = self._norm_encrypt(str((ap or {}).get("encryptType") or "NONE"), auth)
+        prof = self._find_profile_by_ssid(ssid)
+        profile_name = str((prof or {}).get("profileName") or self._new_profile_name())
+        from_provider = str((ap or {}).get("fromProvider") or (prof or {}).get("fromProvider") or "0")
+        signal = str((ap or {}).get("signal") or (prof or {}).get("signal") or "0")
+        key_id = str((prof or {}).get("keyID") or "0")
+        new_prof = {
+            "profileName": profile_name,
+            "fromProvider": from_provider,
+            "connectStatus": "0",
+            "signal": signal,
+            "ssid": ssid,
+            "authMode": auth,
+            "encryptType": enc,
+            "password": password or "",
+            "keyID": key_id,
+        }
+        encoded = self._encode_profile(new_prof)
+
+        async def after_confirm():
+            self.is_wifi_hotspot_busy = True
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+            show_toast(self.app_page, f"正在连接 {ssid}...", True)
+            try:
+                await self._refresh_profiles_silent()
+                profiles = list(getattr(self, "saved_profiles", []) or [])
+                replaced = False
+                out = []
+                for p in profiles:
+                    if str(p.get("ssid") or "") == ssid or str(p.get("profileName") or "") == profile_name:
+                        out.append(new_prof)
+                        replaced = True
+                    else:
+                        out.append(p)
+                if not replaced:
+                    out.append(new_prof)
+                encoded_list = [self._encode_profile(x) for x in out]
+                action = "modify" if prof else "add"
+                if action == "add" and not profiles:
+                    ok_prof = await self.api_client.wifi_spot_profile_update([encoded], action="add", wifi_update_profile="")
+                elif action == "add":
+                    ok_prof = await self.api_client.wifi_spot_profile_update(encoded_list, action="add", wifi_update_profile="")
+                else:
+                    ok_prof = await self.api_client.wifi_spot_profile_update(
+                        encoded_list, action="modify", wifi_update_profile=encoded
+                    )
+                if not ok_prof:
+                    show_toast(self.app_page, "保存热点配置失败", False)
+                    return
+                ok_con = await self.api_client.wifi_sta_connect(
+                    ssid=ssid,
+                    auth_mode=auth,
+                    encrypt_type=enc,
+                    password=password or "",
+                    profile_name=profile_name,
+                    key_id=key_id,
+                )
+                if ok_con:
+                    show_toast(self.app_page, f"已发起连接 {ssid}", True)
+                    self.set_global_status(f"正在连接 {ssid}", ft.Colors.PRIMARY)
+                    await self._refresh_profiles_silent()
+                    for it in self.scan_hotspots:
+                        if str(it.get("ssid") or "") == ssid:
+                            it["connectStatus"] = "1"
+                    self._render_hotspot_list()
+                else:
+                    show_toast(self.app_page, "连接失败", False)
+            except Exception as ex:
+                logger.error(f"连接热点异常: {ex}", exc_info=DEBUG_MODE)
+                show_toast(self.app_page, "连接异常", False)
+            finally:
+                self.is_wifi_hotspot_busy = False
+                self._render_hotspot_list()
+                self._sync_data_ui()
+                try:
+                    self.update()
+                except Exception:
+                    pass
+
+        self._show_confirm_dialog("WAN 将断开，是否继续？", on_ok=after_confirm)
+
+    async def on_wifi_hotspot_disconnect(self, e=None):
+        if self.is_applying or self.is_switching_data or self.is_wifi_hotspot_busy:
+            show_toast(self.app_page, "请稍候再试", False)
+            return
+        # 点已连接项：先确认再断开，避免误触
+        confirmed = {"ok": False}
+
+        async def after_yes():
+            confirmed["ok"] = True
+            await self._do_wifi_hotspot_disconnect()
+
+        self._show_confirm_dialog("确定断开当前 WiFi？", on_ok=after_yes)
+
+    async def _do_wifi_hotspot_disconnect(self):
+        if self.is_applying or self.is_switching_data or self.is_wifi_hotspot_busy:
+            show_toast(self.app_page, "请稍候再试", False)
+            return
+        self.is_wifi_hotspot_busy = True
+        self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+        show_toast(self.app_page, "正在断开连接...", True)
+        try:
+            ok = await self.api_client.wifi_sta_disconnect()
+            if ok:
+                for it in self.scan_hotspots:
+                    it["connectStatus"] = "0"
+                await self._refresh_profiles_silent()
+                self._render_hotspot_list()
+                # 连接 STA 热点时设备会断蜂窝 WAN；断开后主动 CONNECT_NETWORK 恢复数据
+                data_ok = False
+                try:
+                    await asyncio.sleep(0.8)
+                    data_ok = await self.api_client.set_data_connection(True, timeout=15.0)
+                except Exception as de:
+                    logger.error(f"断开热点后恢复数据异常: {de}", exc_info=DEBUG_MODE)
+                    data_ok = False
+                if data_ok:
+                    self.is_data_connected = True
+                    if hasattr(self, "data_switch"):
+                        self.data_switch.value = True
+                    self.set_global_status("已断开 WiFi，数据连接已恢复", ft.Colors.PRIMARY)
+                    show_toast(self.app_page, "已断开 WiFi，数据连接已恢复", True)
+                else:
+                    self.set_global_status("已断开 WiFi，数据未自动恢复", ft.Colors.ERROR)
+                    show_toast(self.app_page, "已断开 WiFi，数据未自动恢复，请手动开启数据连接", False)
+            else:
+                show_toast(self.app_page, "断开失败", False)
+        except Exception as ex:
+            logger.error(f"断开热点异常: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "断开异常", False)
+        finally:
+            self.is_wifi_hotspot_busy = False
+            self._render_hotspot_list()
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    async def on_apply_wifi_sta(self, e=None):
+        if self.is_applying or self.is_switching_data:
+            return
+        if self.current_mode != "PPP":
+            self.wifi_sta_switch.value = self.current_wifi_sta
+            show_toast(self.app_page, "请先将接入方式切换为无线宽带并应用", False)
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+            return
+        enable = bool(self.wifi_sta_switch.value)
+        self.is_applying = True
+        self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+        show_toast(self.app_page, f"正在{'开启' if enable else '关闭'} Internet Wi-Fi...", True)
+        try:
+            ok = await self.api_client.set_wifi_sta_control(enable, ap_station_mode="wifi_pref")
+            if ok:
+                self.current_wifi_sta = enable
+                self.set_global_status(f"Internet Wi-Fi 已{'开启' if enable else '关闭'}", ft.Colors.PRIMARY)
+                show_toast(self.app_page, f"Internet Wi-Fi 已{'开启' if enable else '关闭'}", True)
+                if enable:
+                    await self._refresh_profiles_silent()
+                    self._render_hotspot_list()
+                else:
+                    self.scan_hotspots = []
+                    self._render_hotspot_list()
+                await self.load(silent=True)
+            else:
+                self.wifi_sta_switch.value = self.current_wifi_sta
+                self.set_global_status("Internet Wi-Fi 设置失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "Internet Wi-Fi 设置失败", False)
+        except Exception as ex:
+            logger.error(f"Internet Wi-Fi 设置异常: {ex}", exc_info=DEBUG_MODE)
+            self.wifi_sta_switch.value = self.current_wifi_sta
+            self.set_global_status("Internet Wi-Fi 设置异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "Internet Wi-Fi 设置异常", False)
+        finally:
+            self.is_applying = False
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+    async def on_apply_wired(self, e=None):
+        if self.is_applying or self.is_switching_data:
+            return
+        if self.current_mode != "PPPOE" and str(self.mode_dropdown.value or "").upper() != "PPPOE":
+            show_toast(self.app_page, "请先将接入方式切换为有线宽带并应用", False)
+            return
+        # 若下拉已选有线但尚未应用 OPERATION_MODE，先提醒
+        if self.current_mode != "PPPOE":
+            show_toast(self.app_page, "请先点「应用」切换到有线宽带", False)
+            return
+
+        conn = str(self.wired_conn_dropdown.value or "").strip().upper()
+        if conn not in ("DHCP", "STATIC", "PPPOE"):
+            show_toast(self.app_page, "请选择连接模式", False)
+            return
+
+        self.is_applying = True
+        self._sync_data_ui()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+        try:
+            if conn == "DHCP":
+                show_toast(self.app_page, "正在应用动态IP...", True)
+                ok = await self.api_client.set_wired_wan_dhcp()
+            elif conn == "STATIC":
+                ip = (self.static_ip.value or "").strip()
+                mask = (self.static_mask.value or "").strip()
+                gw = (self.static_gw.value or "").strip()
+                dns1 = (self.static_dns1.value or "").strip()
+                dns2 = (self.static_dns2.value or "").strip()
+                for label, val in [
+                    ("IP 地址", ip), ("子网掩码", mask), ("默认网关", gw),
+                    ("首选 DNS", dns1), ("备用 DNS", dns2),
+                ]:
+                    if not val:
+                        show_toast(self.app_page, f"请填写{label}", False)
+                        return
+                    if not self._valid_ipv4(val):
+                        show_toast(self.app_page, f"{label}格式不正确", False)
+                        return
+                show_toast(self.app_page, "正在应用静态IP...", True)
+                ok = await self.api_client.set_wired_wan_static(ip, mask, gw, dns1, dns2)
+            else:
+                user = (self.pppoe_user.value or "").strip()
+                pwd = (self.pppoe_pwd.value or "").strip()
+                dial = str(self.pppoe_dial.value or "manual_dial").strip()
+                if not user or not pwd:
+                    show_toast(self.app_page, "请填写 PPPoE 用户名和密码", False)
+                    return
+                if dial not in ("auto_dial", "manual_dial"):
+                    dial = "manual_dial"
+                show_toast(self.app_page, "正在应用 PPPoE...", True)
+                ok = await self.api_client.set_wired_wan_pppoe(user, pwd, dial_mode=dial, action_link="connect")
+
+            if ok:
+                self.current_wired_conn = conn
+                self.txt_wired_status.value = f"当前连接模式: {self._wired_conn_label(conn)}"
+                self.set_global_status(f"有线配置已应用: {self._wired_conn_label(conn)}", ft.Colors.PRIMARY)
+                show_toast(self.app_page, f"有线配置已应用: {self._wired_conn_label(conn)}", True)
+                await asyncio.sleep(0.8)
+                await self.load(silent=True)
+            else:
+                self.set_global_status("有线配置应用失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "有线配置应用失败", False)
+        except Exception as ex:
+            logger.error(f"有线配置应用异常: {ex}", exc_info=DEBUG_MODE)
+            self.set_global_status("有线配置应用异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "有线配置应用异常", False)
+        finally:
+            self.is_applying = False
+            self._sync_data_ui()
+            try:
+                self.update()
+            except Exception:
+                pass
+
     def update_size(self, is_small: bool, is_ultra_small: bool = False):
         self.is_small_layout = is_small
         self.is_ultra_small_layout = is_ultra_small
@@ -5690,16 +7251,53 @@ class AccessModeCard(ft.Container):
         self.txt_hint.size = 9 if is_ultra_small else (11 if is_small else 12)
         if hasattr(self, "txt_mode_tip"):
             self.txt_mode_tip.size = 9 if is_ultra_small else (11 if is_small else 12)
+        if hasattr(self, "txt_wired_tip"):
+            self.txt_wired_tip.size = 9 if is_ultra_small else (11 if is_small else 12)
+        if hasattr(self, "txt_wired_status"):
+            self.txt_wired_status.size = 9 if is_ultra_small else (11 if is_small else 12)
+        if hasattr(self, "txt_wifi_sta_tip"):
+            self.txt_wifi_sta_tip.size = 9 if is_ultra_small else (11 if is_small else 12)
         self.txt_current.size = 9 if is_ultra_small else (11 if is_small else 12)
         label_size = 11 if is_ultra_small else (13 if is_small else 14)
         self.txt_data_label.size = label_size
         self.txt_mode_label.size = label_size
+        self.txt_wired_conn_label.size = label_size
+        self.txt_dial_label.size = label_size
+        if hasattr(self, "txt_wifi_sta_label"):
+            self.txt_wifi_sta_label.size = label_size
+        if hasattr(self, "txt_wired_title"):
+            self.txt_wired_title.size = 11 if is_ultra_small else (13 if is_small else 15)
+        if hasattr(self, "txt_wifi_list_title"):
+            self.txt_wifi_list_title.size = 11 if is_ultra_small else (13 if is_small else 14)
+        if hasattr(self, "txt_wifi_list_empty"):
+            self.txt_wifi_list_empty.size = 9 if is_ultra_small else (11 if is_small else 12)
         field_text_size = 10 if is_ultra_small else (12 if is_small else 14)
-        if hasattr(self.mode_dropdown, "text_size"):
-            self.mode_dropdown.text_size = field_text_size
-        self.btn_apply.height = 42 if is_ultra_small else 48
-        if self.btn_apply.style and getattr(self.btn_apply.style, "text_style", None):
-            self.btn_apply.style.text_style.size = 11 if is_ultra_small else (13 if is_small else 14)
+        field_label_size = 10 if is_ultra_small else (12 if is_small else 14)
+        for ctrl in [
+            self.mode_dropdown, self.wired_conn_dropdown, self.pppoe_dial,
+            self.static_ip, self.static_mask, self.static_gw, self.static_dns1, self.static_dns2,
+            self.pppoe_user, self.pppoe_pwd,
+        ]:
+            if hasattr(ctrl, "text_size"):
+                ctrl.text_size = field_text_size
+            if hasattr(ctrl, "label_style") and ctrl.label_style is not None:
+                ctrl.label_style.size = field_label_size
+        for btn in [
+            self.btn_apply_mode,
+            self.btn_apply_wired,
+            getattr(self, "btn_wifi_scan", None),
+        ]:
+            if not btn:
+                continue
+            btn.height = 42 if is_ultra_small else 48
+            if btn.style and getattr(btn.style, "text_style", None):
+                btn.style.text_style.size = 11 if is_ultra_small else (13 if is_small else 14)
+        # 尺寸变化后按新字号/列数重绘热点卡片
+        if getattr(self, "scan_hotspots", None):
+            try:
+                self._render_hotspot_list()
+            except Exception:
+                pass
         try:
             self.update()
         except Exception:
@@ -5707,7 +7305,7 @@ class AccessModeCard(ft.Container):
 
 
 class RouterCard(ft.Container):
-    """路由设置"""
+    # 路由设置
 
     def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
         super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12, visible=False)
@@ -5775,7 +7373,8 @@ class RouterCard(ft.Container):
             "Ethernet",
             expand=True,
         )
-        self.bridge_bind.on_change = self.on_bridge_bind_change
+        # Flet 0.85+ Dropdown 用 on_select
+        self.bridge_bind.on_select = self.on_bridge_bind_change
         self.bridge_mac = create_text_field("MAC 地址", "", multiline=True, min_lines=1, max_lines=2, expand=True)
         self.btn_bridge_apply = create_button("应用", on_click=self.on_save_bridge)
 
@@ -5934,8 +7533,16 @@ class RouterCard(ft.Container):
 
 
     def _sync_data_ui(self):
+        wired = False
+        try:
+            wired = bool(self.api_client.is_wired_access())
+        except Exception:
+            wired = False
+        if wired:
+            self.is_data_connected = False
         self.data_switch.value = self.is_data_connected
-        self.data_switch.disabled = self.is_switching_data
+        self.data_switch.disabled = self.is_switching_data or wired
+        # 有线模式无蜂窝数据，LAN 仍按“无蜂窝连接”可编辑逻辑
         self._set_lan_enabled((not self.is_data_connected) and (not self.is_switching_data))
 
     def update_realtime(self, status: 'RealtimeStatus'):
@@ -5986,6 +7593,15 @@ class RouterCard(ft.Container):
                 self.data_switch.update()
             except Exception:
                 pass
+            return
+        if self.api_client.is_wired_access():
+            self.data_switch.value = False
+            self.data_switch.disabled = True
+            try:
+                self.data_switch.update()
+            except Exception:
+                pass
+            show_toast(self.app_page, "有线宽带模式下不可切换数据连接", False)
             return
         target_on = bool(self.data_switch.value)
         self.data_switch.value = self.is_data_connected
@@ -6086,11 +7702,13 @@ class RouterCard(ft.Container):
         finally:
             self._loading = False
 
-    async def sync_current(self):
-        if self.visible:
-            await self.load(silent=True)
-            if self.bind_enable.value:
-                await self.load_bind(silent=True)
+    async def sync_current(self, force: bool = False):
+        # 按设备回显路由设置，force=True 时手动刷新强制回写，丢弃未应用修改
+        if (not force) and (not self.visible):
+            return
+        await self.load(silent=True)
+        if self.bind_enable.value:
+            await self.load_bind(silent=True)
 
 
     async def on_save_lan(self, e=None):
@@ -6387,7 +8005,7 @@ class RouterCard(ft.Container):
         return rules
 
     def _render_bind_rules(self):
-        """大屏横向；小屏勾选框独立一行，信息在下方完整显示（对齐端口转发）"""
+        # 大屏横向；小屏勾选框独立一行，信息在下方完整显示（对齐端口转发)
         self.bind_rule_checks = {}
         self.bind_rules_list.controls.clear()
         text_size = 10 if self.is_ultra_small_layout else (11 if self.is_small_layout else 13)
@@ -6688,7 +8306,11 @@ class MU5001:
         self.background_tasks: Set[asyncio.Task] = set()  # 零散后台任务的强引用集合
         
         # 网络连接状态变量
+        # offline_count: 设备网不可达（WiFi/网线断了）
+        # session_fail_count: 能访问设备但登录会话失效（被其他设备挤掉）
         self.offline_count = 0
+        self.session_fail_count = 0
+        self.disconnect_reason = "network"  # network | session
         self.is_connected = True
 
     def apply_responsive_text_theme(self, font_size: int):
@@ -6713,11 +8335,12 @@ class MU5001:
             return False
 
     async def start(self):
-        # 尝试初始化本地存储
+        # 本地存储：使用 Page 级 shared_preferences（写法更规范）
         try:
-            self.prefs = ft.SharedPreferences()
+            self.prefs = self.page.shared_preferences
         except Exception as e:
             logger.warning(f"SharedPreferences 初始化失败: {e}")
+            self.prefs = None
 
         # 绑定系统亮度变化事件
         self.page.on_platform_brightness_change = self.on_platform_brightness_change
@@ -6836,10 +8459,10 @@ class MU5001:
         self.apn_card.visible = False
         if hasattr(self, 'access_mode_card'):
             self.access_mode_card.visible = False
-        if hasattr(self, 'firewall_card'):
-            self.firewall_card.visible = True
         if hasattr(self, 'router_card'):
             self.router_card.visible = False
+        if hasattr(self, 'firewall_card'):
+            self.firewall_card.visible = True
             # 每次进入防火墙都重新拉取当前页状态，避免官方网页改过后本地开关不刷新
             if self.firewall_card.current_feature is None:
                 self.firewall_card.show_menu()
@@ -6877,9 +8500,14 @@ class MU5001:
             spawn_background_task(self, self.access_mode_card.load())
         self.view_toolbox.update()
 
-    def show_disconnected_ui(self):
+    def show_disconnected_ui(self, reason: str = "network"):
+        # reason=network: 没连上设备网；reason=session: 连着设备但登录被挤掉
+        self.disconnect_reason = reason if reason in ("network", "session") else "network"
         if hasattr(self, "disconnect_text"):
-            self.disconnect_text.value = "未连接 WiFi"
+            if self.disconnect_reason == "session":
+                self.disconnect_text.value = "登录已失效（可能被其他设备登录挤掉）"
+            else:
+                self.disconnect_text.value = "未连接设备（请检查 WiFi/网线）"
         self.content_area.visible = False
         self.disconnected_view.visible = True
         self.page.update()
@@ -7058,7 +8686,7 @@ class MU5001:
         # 未连接路由器的提示界面
         self.disconnect_icon = ft.Icon(ft.Icons.ROUTER_OUTLINED, size=80, color=ft.Colors.PRIMARY)
         # 强制文字居中对齐，防止在极窄屏幕下换行时偏向左侧
-        self.disconnect_text = ft.Text("未连接 WiFi", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, text_align=ft.TextAlign.CENTER)
+        self.disconnect_text = ft.Text("未连接设备（请检查 WiFi/网线）", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE, text_align=ft.TextAlign.CENTER)
         self.disconnect_btn = create_button("重新登录", on_click=self.do_relogin, expand=False)
         
         self.disconnected_view = ft.Container(
@@ -7078,20 +8706,13 @@ class MU5001:
             alignment=ft.Alignment(0, 0)
         )
         # 用 Stack 将主页面和提示界面叠放
+        # 注意：content_area 只能挂一处父控件，勿再包一层 GestureDetector 抢走父级
         self.main_content_wrapper = ft.Stack(
             controls=[self.content_area, self.disconnected_view],
             expand=True
         )
 
-        # 手势检测器
-        self.gesture_area = ft.GestureDetector(
-            content=self.content_area,
-            on_horizontal_drag_start=on_drag_start,
-            on_horizontal_drag_update=on_drag_update,
-            expand=True
-        )
-        
-        # 使用 ft.SafeArea 实现状态栏自适应
+        # 使用 ft.SafeArea 实现状态栏自适应（滑动手势在外层 GestureDetector）
         self.main_view = ft.Container(
             padding=15, expand=True, visible=False,
             content=ft.GestureDetector(
@@ -7234,6 +8855,24 @@ class MU5001:
                 self.on_page_resize(None)
             self.page.update()
 
+    def _is_network_op_busy(self) -> bool:
+        # 切换数据/接入模式/STA 等操作期间，设备会短暂无响应，不应当断网重登
+        cards = []
+        for name in ("settings_card", "apn_card", "router_card", "access_mode_card"):
+            card = getattr(self, name, None)
+            if card is not None:
+                cards.append(card)
+        for card in cards:
+            if getattr(card, "is_switching_data", False):
+                return True
+            if getattr(card, "is_applying", False):
+                return True
+            if getattr(card, "is_wifi_scanning", False):
+                return True
+            if getattr(card, "is_wifi_hotspot_busy", False):
+                return True
+        return False
+
     def start_auto_refresh(self):
         if self.auto_refresh_task and not self.auto_refresh_task.done():
             self.auto_refresh_task.cancel()
@@ -7252,16 +8891,45 @@ class MU5001:
                     continue
                 self.is_refreshing = True
                 try:
-                    # 发起 HTTP 请求前，先用 TCP 极速探活
-                    is_alive = await check_router_alive(self.device_state.ip)
-                    if not is_alive:
+                    # 切数据/接入/STA 时设备会短暂无响应，不累计失败
+                    if self._is_network_op_busy():
+                        self.offline_count = 0
+                        self.session_fail_count = 0
+                        continue
+
+                    # 轻量探活：只判「连着设备网」+「登录是否被挤」
+                    # 与蜂窝数据开关无关
+                    link = await self.client.probe_device_link()
+                    if link == "busy":
+                        logger.debug("设备忙/探活超时，本轮忽略")
+                        continue
+                    if link == "network_down":
                         self.offline_count += 1
+                        self.session_fail_count = 0
                         if self.offline_count >= OFFLINE_FAIL_THRESHOLD and self.is_connected:
                             self.is_connected = False
-                            self.show_disconnected_ui()
-                            self.page.update()
-                        continue # 探活失败，跳过后面的请求
-                    
+                            self.show_disconnected_ui(reason="network")
+                        continue
+                    if link == "session_invalid":
+                        self.session_fail_count += 1
+                        self.offline_count = 0
+                        if self.session_fail_count >= OFFLINE_FAIL_THRESHOLD and self.is_connected:
+                            self.is_connected = False
+                            self.show_disconnected_ui(reason="session")
+                        else:
+                            logger.debug(
+                                f"疑似登录失效，等待复核: {self.session_fail_count}/{OFFLINE_FAIL_THRESHOLD}"
+                            )
+                        continue
+
+                    # link == ok
+                    self.offline_count = 0
+                    self.session_fail_count = 0
+                    if not self.is_connected:
+                        self.is_connected = True
+                        self.show_connected_ui()
+
+                    # 探活通过后再拉实时状态刷新 UI（失败不据此断网，避免大包超时误判）
                     await self.fetch_realtime()
                 except Exception as e:
                     logger.debug(f"后台刷新异常: {e}")
@@ -7269,55 +8937,31 @@ class MU5001:
                     self.is_refreshing = False
         except asyncio.CancelledError:
             logger.info("自动刷新任务已停止")
+
     async def fetch_realtime(self, force_device_lists: bool = False):
+        # 仅刷新界面数据；断网/会话失效由 probe_device_link 判定
         if not self.device_state.client:
             return False
         try:
-            # 拿到强类型数据对象；force_device_lists 时立刻刷新设备列表
             status = await self.client.get_realtime_status(force_device_lists=force_device_lists)
-            
-            # 精准识别“掉线”
-            # 如果核心字段（IMSI、主板温度）同时为空，说明凭证已失效
-            is_kicked_out = (
-                not status.imsi and 
-                status.temp_mdm in ("", "--")
-            )
-            if is_kicked_out:
-                self.offline_count += 1
-                if self.offline_count < OFFLINE_FAIL_THRESHOLD:
-                    logger.debug(f"疑似断开连接，等待复核: {self.offline_count}/{OFFLINE_FAIL_THRESHOLD}")
-                    return False
-                self.is_connected = False
-                self.show_disconnected_ui()
-                return False
-            
-            # 恢复连接时的处理
+
             if not self.is_connected:
                 self.is_connected = True
                 self.show_connected_ui()
-            self.offline_count = 0  # 成功拿到数据，重置断网计数
-            
+
             self.reboot_card.update_time_display()
-            # 直接把对象丢给卡片
             self.status_card.update_realtime(status)
             self.device_list_card.update_realtime(status)
-            
-            # 原本的 settings_card 只需要判断数据连接开关，这里做个兼容包装    
             self.settings_card.update_realtime({"ppp_status": "connected" if status.is_data_connected else "disconnected"})
-            self.apn_card.update_realtime(status) # 将联网状态传给 APN 控制按钮显示
+            self.apn_card.update_realtime(status)
             if hasattr(self, 'router_card'):
                 self.router_card.update_realtime(status)
             if hasattr(self, 'access_mode_card'):
                 self.access_mode_card.update_realtime(status)
             return True
         except Exception as e:
-            logger.debug(f"实时刷新异常: {e}")
-            
-            # 断网判定处理
-            self.offline_count += 1
-            if self.offline_count >= OFFLINE_FAIL_THRESHOLD and self.is_connected:
-                self.is_connected = False
-                self.show_disconnected_ui()
+            # 大包超时/瞬时失败：不直接弹断网（由下一轮轻量探活决定）
+            logger.debug(f"实时刷新异常（不据此断网）: {e}")
             return False
 
     async def refresh_all(self, e=None):
@@ -7412,6 +9056,7 @@ class MU5001:
 
             current_net_mode = str(net_res.get(API_KEY_READ, "")).strip().upper()
             
+            # 手动/全量刷新：一律以设备真实状态回写，丢弃未点「应用」的本地修改
             self.reboot_card.update_config(res)
             self.settings_card.update_config(
                 res, 
@@ -7420,9 +9065,12 @@ class MU5001:
                 current_net_mode
             )
             self.apn_card.update_config(res)
-            # 右上角刷新：丢弃未应用的下拉选择，按设备真实接入模式回显
             if hasattr(self, "access_mode_card") and self.access_mode_card is not None:
                 await self.access_mode_card.load(silent=True)
+            if hasattr(self, "firewall_card") and self.firewall_card is not None:
+                await self.firewall_card.sync_current_feature(force=True)
+            if hasattr(self, "router_card") and self.router_card is not None:
+                await self.router_card.sync_current(force=True)
 
             dev_status = " | 开发者模式已解锁" if self.device_state.dev_unlocked else " | 开发者模式未解锁"
             self.status_card.set_global_status("数据读取成功" + dev_status, ft.Colors.PRIMARY if self.device_state.dev_unlocked else ft.Colors.ERROR)
@@ -7438,8 +9086,8 @@ class MU5001:
             if not realtime_ok:
                 raise RuntimeError("实时数据刷新失败")
             if e:
-                show_toast(self.page, "数据刷新成功", True)
-            logger.info("全量配置刷新完成")
+                show_toast(self.page, "已按设备状态刷新", True)
+            logger.info("全量配置刷新完成（以设备为准）")
             return True
         except Exception as ex: # 注意这里用了 ex 防止和参数 e 冲突
             logger.error(f"全量刷新异常: {ex}", exc_info=DEBUG_MODE)
@@ -7448,26 +9096,75 @@ class MU5001:
                 show_toast(self.page, "数据读取失败，请检查连接", False)
             return False
 
+    def _apply_data_connected_state(self, connected: bool, wired: bool = False, from_force: bool = False):
+        # 同步设置/APN/接入模式/路由页的数据连接开关状态
+        if hasattr(self, "settings_card") and self.settings_card is not None:
+            self.settings_card.data_switch.value = bool(connected) and not wired
+            if wired:
+                self.settings_card.data_switch.disabled = True
+        if hasattr(self, "apn_card") and self.apn_card is not None:
+            self.apn_card.is_data_connected = bool(connected) and not wired
+            try:
+                self.apn_card._sync_data_ui()
+            except Exception:
+                pass
+        if hasattr(self, "router_card") and self.router_card is not None:
+            self.router_card.is_data_connected = bool(connected) and not wired
+            try:
+                self.router_card._sync_data_ui()
+            except Exception:
+                pass
+        if hasattr(self, "access_mode_card") and self.access_mode_card is not None:
+            self.access_mode_card.is_data_connected = bool(connected) and not wired
+            if hasattr(self.access_mode_card, "data_switch"):
+                self.access_mode_card.data_switch.value = bool(connected) and not wired
+            try:
+                self.access_mode_card._sync_data_ui()
+                self.access_mode_card.update()
+            except Exception:
+                pass
+        if from_force and connected:
+            logger.info("已强制开启数据连接并同步各页开关")
+
     async def on_login_success(self):
+
         self.login_view.visible = False
         self.main_view.visible = True
         self.page.update()
 
-        if await self.client.set_data_connection(True):
-            self.settings_card.data_switch.value = True
-            self.apn_card.is_data_connected = True
-            self.apn_card._sync_data_ui()
-        else:
-            logger.warning("登录成功，但强制开启数据连接失败或等待连接超时")
-
+        # 先刷新识别有线接入；有线模式不强制开蜂窝数据
         await self.refresh_all()
+        if hasattr(self, "access_mode_card"):
+            await self.access_mode_card.sync_current()
+        data_ok = False
+        if not self.client.is_wired_access():
+            # 重登/登录：先断 STA WiFi，再强制开蜂窝
+            data_ok = await self.client.restore_cellular_prefer_data(timeout=20.0)
+            self._apply_data_connected_state(bool(data_ok), from_force=True)
+            if not data_ok:
+                logger.warning("登录成功，但断开 WiFi 或强制开启数据失败")
+        else:
+            self._apply_data_connected_state(False, wired=True)
         # 单设备登录场景：重新登录后按设备最新状态同步防火墙开关
         if hasattr(self, "firewall_card"):
             await self.firewall_card.sync_current_feature()
         if hasattr(self, "router_card"):
             await self.router_card.sync_current()
         if hasattr(self, "access_mode_card"):
-            await self.access_mode_card.sync_current()
+            # 强制开数据后再同步接入页，并自动扫描热点
+            await self.access_mode_card.load(silent=True, auto_scan=True)
+            # 登录已断 STA：本地列表状态改为未连接，避免仍显示「断开」
+            try:
+                for it in getattr(self.access_mode_card, "scan_hotspots", []) or []:
+                    it["connectStatus"] = "0"
+                for p in getattr(self.access_mode_card, "saved_profiles", []) or []:
+                    p["connectStatus"] = "0"
+                self.access_mode_card._render_hotspot_list()
+            except Exception:
+                pass
+            # load 可能按瞬时 ppp_status 把开关又刷回关：强制开成功时再写回
+            if (not self.client.is_wired_access()) and data_ok:
+                self._apply_data_connected_state(True, from_force=True)
         self.start_auto_refresh()
 
     async def do_relogin(self, e=None):
@@ -7490,15 +9187,17 @@ class MU5001:
             success = await self.client.login(self.device_state.ip, self.device_state.password)
             if success:
                 dev_ok = await self.client.unlock_developer()
-                data_connected = await self.client.set_data_connection(True)
-                if data_connected:
-                    self.settings_card.data_switch.value = True
-                    self.apn_card.is_data_connected = True
-                    self.apn_card._sync_data_ui()
-                else:
-                    logger.warning("重登成功，但强制开启数据连接失败或等待连接超时")
-
                 verified = await self.refresh_all()
+                if hasattr(self, "access_mode_card"):
+                    await self.access_mode_card.sync_current()
+                data_connected = False
+                if not self.client.is_wired_access():
+                    data_connected = await self.client.restore_cellular_prefer_data(timeout=20.0)
+                    self._apply_data_connected_state(bool(data_connected), from_force=True)
+                    if not data_connected:
+                        logger.warning("重登成功，但断开 WiFi 或强制开启数据失败")
+                else:
+                    self._apply_data_connected_state(False, wired=True)
                 if not verified:
                     raise RuntimeError("重登后读取设备数据失败")
 
@@ -7508,9 +9207,20 @@ class MU5001:
                 if hasattr(self, "router_card"):
                     await self.router_card.sync_current()
                 if hasattr(self, "access_mode_card"):
-                    await self.access_mode_card.sync_current()
+                    await self.access_mode_card.load(silent=True, auto_scan=True)
+                    try:
+                        for it in getattr(self.access_mode_card, "scan_hotspots", []) or []:
+                            it["connectStatus"] = "0"
+                        for p in getattr(self.access_mode_card, "saved_profiles", []) or []:
+                            p["connectStatus"] = "0"
+                        self.access_mode_card._render_hotspot_list()
+                    except Exception:
+                        pass
+                    if (not self.client.is_wired_access()) and data_connected:
+                        self._apply_data_connected_state(True, from_force=True)
 
                 self.offline_count = 0
+                self.session_fail_count = 0
                 self.is_connected = True
                 self.show_connected_ui()
 

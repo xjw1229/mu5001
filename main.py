@@ -559,7 +559,7 @@ class MU5001Client:
             logger.error(f"GET HTTP 状态码错误 {e.response.status_code}: {cmd}")
             raise
         except Exception as e:
-            # 这里的 exc_info=True 是排错神器，能精准打印出代码里比如 None.strip() 导致的崩溃行号
+            # 精准打印出代码里比如 None.strip() 导致的崩溃行号
             logger.error(f"GET 执行时发生代码内部异常: {cmd}, {type(e).__name__}: {e}", exc_info=True)
             raise
 
@@ -617,12 +617,12 @@ class MU5001Client:
         pa = _clean("pm_sensor_pa1")
         imsi = _clean("sim_imsi") or _clean("imsi")
 
-        # ① PA 有值 = 登录有效（含 0℃）
+        # 1.PA 有值 = 登录有效（含 0℃）
         if _has_pa(pa):
             return "ok"
 
-        # ② PA 拿不到 = 登录失效（主判定）
-        # ③ IMSI 仅二次确认：两者都空更确信；有 IMSI 也不能救回会话
+        # 2.PA 拿不到 = 登录失效（主判定）
+        # 3.IMSI 仅二次确认：两者都空更确信；有 IMSI 也不能救回会话
         if not _has_imsi(imsi):
             logger.debug("PA 与 IMSI 均无，二次确认会话失效")
         else:
@@ -665,6 +665,106 @@ class MU5001Client:
         except Exception as e:
             logger.error(f"POST 异常: {goform_id}, {type(e).__name__}: {e}", exc_info=DEBUG_MODE)
             raise
+
+    # SIP ALG：抓包 goformId=ALG_SETTING&alg_sip_enable=0|1
+    async def get_alg_sip_enable(self) -> bool:
+        try:
+            data = await self.get_cmd("alg_sip_enable", multi_data=True)
+            return str(data.get("alg_sip_enable", "0")).strip() == "1"
+        except Exception as e:
+            logger.error(f"读取 SIP ALG 异常: {e}", exc_info=DEBUG_MODE)
+            raise
+
+    async def set_alg_sip_enable(self, enabled: bool) -> bool:
+        try:
+            return await self.post_cmd("ALG_SETTING", {"alg_sip_enable": "1" if enabled else "0"})
+        except Exception as e:
+            logger.error(f"设置 SIP ALG 异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 固件升级：检查更新 goformId=IF_UPGRADE&select_op=check
+    async def check_firmware_update(self) -> bool:
+        try:
+            return await self.post_cmd("IF_UPGRADE", {"select_op": "check"})
+        except Exception as e:
+            logger.error(f"检查固件更新异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 固件升级：自动检测 goformId=SetUpgAutoSetting
+    async def get_firmware_auto_setting(self) -> Dict[str, str]:
+        try:
+            # 兼容不同固件字段名；空字符串表示设备未返回，不要误当成关闭
+            data = await self.get_cmd(
+                "UpgMode,UpgIntervalDay,UpgRoamPermission,wa_inner_version,new_version_state,"
+                "auto_update_switch,upgrade_mode,m_UpgMode",
+                multi_data=True,
+            ) or {}
+            mode = ""
+            for key in ("UpgMode", "auto_update_switch", "upgrade_mode", "m_UpgMode"):
+                raw = str(data.get(key, "") or "").strip()
+                if raw != "":
+                    mode = raw
+                    break
+            day = str(data.get("UpgIntervalDay", "") or "").strip()
+            roam = str(data.get("UpgRoamPermission", "") or "").strip()
+            return {
+                "UpgMode": mode,  # 可能为空：调用方勿把空当 0
+                "UpgIntervalDay": day or "15",
+                "UpgRoamPermission": roam or "0",
+                "wa_inner_version": str(data.get("wa_inner_version", "") or "").strip(),
+                "new_version_state": str(data.get("new_version_state", "") or "").strip(),
+            }
+        except Exception as e:
+            logger.error(f"读取固件升级设置异常: {e}", exc_info=DEBUG_MODE)
+            raise
+
+    async def set_firmware_auto_setting(
+        self,
+        enabled: bool,
+        interval_day: str = "15",
+        roam_permission: str = "0",
+    ) -> bool:
+        try:
+            day = str(interval_day or "15").strip() or "15"
+            roam = str(roam_permission or "0").strip() or "0"
+            # 与抓包一致：UpgIntervalDay / UpgMode / UpgRoamPermission
+            return await self.post_cmd(
+                "SetUpgAutoSetting",
+                {
+                    "UpgIntervalDay": day,
+                    "UpgMode": "1" if enabled else "0",
+                    "UpgRoamPermission": roam,
+                },
+            )
+        except Exception as e:
+            logger.error(f"设置固件自动检测异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 恢复出厂：官方网页 restore.js -> service.restoreFactorySettings
+    # goformId=RESTORE_FACTORY_SETTINGS（仅用户确认后调用）
+    async def restore_factory_settings(self) -> bool:
+        try:
+            return await self.post_cmd("RESTORE_FACTORY_SETTINGS", {})
+        except Exception as e:
+            logger.error(f"恢复出厂设置异常: {e}", exc_info=DEBUG_MODE)
+            return False
+
+    # 修改管理员登录密码。抓包: goformId=CHANGE_PASSWORD
+    # oldPassword/newPassword = SHA256(明文).upper()（单次，不是登录那套双次）
+    async def change_admin_password(self, old_password: str, new_password: str) -> bool:
+        try:
+            old_pwd = str(old_password or "")
+            new_pwd = str(new_password or "")
+            return await self.post_cmd(
+                "CHANGE_PASSWORD",
+                {
+                    "oldPassword": get_sha256_upper(old_pwd),
+                    "newPassword": get_sha256_upper(new_pwd),
+                },
+            )
+        except Exception as e:
+            logger.error(f"修改登录密码异常: {e}", exc_info=DEBUG_MODE)
+            return False
 
     # 异步设置 WiFi 覆盖范围
     async def set_wifi_coverage(self, coverage_val: str) -> bool:
@@ -2179,7 +2279,6 @@ class SettingsCard(ft.Container):
         wifi_mode_container = ft.Column([
             self.wifi_mode,
             btn_apply_mode,
-            ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT)
         ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
         
         # 设为隐藏的占位符，防止页面下方的排版代码报错
@@ -2407,15 +2506,18 @@ class SettingsCard(ft.Container):
                 ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
                 ft.Text("WiFi 休眠", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
                 self.wifi_sleep, btn_wifi_sleep, ft.Container(height=15),
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
 
                 ft.Column([
                     ft.Text("WiFi 频段设置", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
                     self.wifi_reconnect_hint
                 ], spacing=2),
                 wifi_mode_container, btn_wifi_radio_apply, ft.Container(height=15),
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
                 wifi_detail_container, ft.Container(height=15),
 
                 wifi_advance_container, ft.Container(height=15),
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
 
                 ft.Text("WiFi 覆盖范围", weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE),
                 self.wifi_coverage_row, btn_wifi_coverage_apply
@@ -4556,11 +4658,13 @@ class FirewallCard(ft.Container):
         self.txt_ping_label = ft.Text("从外网 PING 入", color=ft.Colors.INVERSE_PRIMARY, no_wrap=False)
         self._sys_security_loading = False
 
+        self.pf_settings_divider = ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT)
+        self.pf_rules_divider = ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT)
         self.panel_port_filter = ft.Column([
             ft.Row([self.pf_enable, self.txt_pf_enable_label], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
             self.pf_policy,
             self.btn_pf_save,
-            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
+            self.pf_settings_divider,
             self.txt_pf_settings_title,
             self.pf_ip_type,
             self.pf_mac,
@@ -4580,7 +4684,7 @@ class FirewallCard(ft.Container):
             ], spacing=8, run_spacing=8),
             self.pf_comment,
             self.btn_pf_add,
-            ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
+            self.pf_rules_divider,
             self.txt_pf_rules_title,
             self.pf_rules_list,
             self.pf_rules_empty,
@@ -4793,6 +4897,7 @@ class FirewallCard(ft.Container):
         self.pf_policy.visible = enabled
         self.btn_pf_save.visible = enabled
         for ctrl in [
+            self.pf_settings_divider, self.pf_rules_divider,
             self.txt_pf_settings_title, self.pf_ip_type, self.pf_mac, self.pf_sip, self.pf_dip,
             self.pf_protocol, self.pf_action, self.pf_comment, self.btn_pf_add,
             self.txt_pf_rules_title, self.pf_rules_list, self.pf_rules_empty, self.btn_pf_delete,
@@ -5867,7 +5972,7 @@ class AccessModeCard(ft.Container):
     def build_ui(self):
         self.txt_title = ft.Text("接入模式", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
         self.txt_hint = ft.Text(
-            "切换接入模式前请先关闭数据连接",
+            "切换模式前请先关闭数据连接",
             size=12,
             color=ft.Colors.ON_SURFACE_VARIANT,
             no_wrap=False,
@@ -6034,6 +6139,7 @@ class AccessModeCard(ft.Container):
                 self.txt_hint,
                 ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
                 self.data_row,
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
                 self.txt_mode_label,
                 self.mode_dropdown,
                 self.txt_mode_tip,
@@ -7401,6 +7507,7 @@ class RouterCard(ft.Container):
                 self.bind_mac,
                 self.bind_ip,
                 self.btn_bind_add,
+                ft.Divider(height=8, color=ft.Colors.OUTLINE_VARIANT),
                 self.txt_bind_list_title,
                 self.bind_rules_list,
                 self.bind_rules_empty,
@@ -8268,6 +8375,749 @@ class RouterCard(ft.Container):
             pass
 
 
+
+# UI 组件拆分 - 其他设置（SIP ALG 等）
+# ==========================================
+class OtherCard(ft.Container):
+    def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
+        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
+        self.app_page = page
+        self.api_client = client
+        self.set_global_status = set_global_status_cb
+        self._loading = False
+        self._applying = False
+        self._checking_update = False
+        self.upg_interval_day = "15"
+        self.upg_roam_permission = "0"
+        self.current_version = ""
+        self.new_version_state = ""
+        self.build_ui()
+
+    def build_ui(self):
+        self.txt_title = ft.Text("其他", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
+
+        # ---- SIP ALG ----
+        self.sip_alg_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_sip_alg_change,
+        )
+        self.txt_sip_alg_title = ft.Text(
+            "SIP ALG",
+            size=15,
+            weight=ft.FontWeight.W_600,
+            color=ft.Colors.INVERSE_PRIMARY,
+            no_wrap=False,
+        )
+        self.txt_sip_alg_hint = ft.Text(
+            "可以与其他互联网程序进行通讯",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.sip_alg_row = ft.Row(
+            [self.sip_alg_enable, self.txt_sip_alg_title],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+            spacing=8,
+        )
+        self.sip_alg_block = ft.Column(
+            [self.sip_alg_row, self.txt_sip_alg_hint],
+            spacing=6,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            tight=True,
+        )
+
+        # ---- 固件相关：自动检测在上，版本/检查更新在下，合成一整块 ----
+        self.auto_update_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_auto_update_change,
+        )
+        self.txt_auto_update_title = ft.Text(
+            "自动检测新版本",
+            size=15,
+            weight=ft.FontWeight.W_600,
+            color=ft.Colors.INVERSE_PRIMARY,
+            no_wrap=False,
+        )
+        self.txt_auto_update_hint = ft.Text(
+            "开启后设备会按周期自动检查固件更新",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.auto_update_row = ft.Row(
+            [self.auto_update_enable, self.txt_auto_update_title],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+            spacing=8,
+        )
+        self.txt_fw_version = ft.Text(
+            "当前版本：--",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.txt_fw_status = ft.Text(
+            "更新状态：--",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.btn_fw_check = create_button("检查更新", on_click=self.on_check_firmware, expand=True)
+        self.restore_enable = ft.Switch(
+            value=False,
+            active_track_color=ft.Colors.PRIMARY,
+            inactive_track_color=ft.Colors.SURFACE,
+            thumb_color=ft.Colors.ON_SURFACE,
+            on_change=self.on_restore_enable_change,
+        )
+        self.txt_restore_title = ft.Text(
+            "设备重置",
+            size=15,
+            weight=ft.FontWeight.W_600,
+            color=ft.Colors.INVERSE_PRIMARY,
+            no_wrap=False,
+        )
+        self.txt_restore_hint = ft.Text(
+            "开启后才可点击下方恢复出厂设置",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.btn_restore_factory = create_button("恢复出厂设置", on_click=self.on_restore_factory, expand=True)
+        self.btn_restore_factory.disabled = True
+        self.restore_row = ft.Row(
+            [self.restore_enable, self.txt_restore_title],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+            spacing=8,
+        )
+        self.fw_block = ft.Column(
+            [
+                self.auto_update_row,
+                self.txt_auto_update_hint,
+                self.txt_fw_version,
+                self.txt_fw_status,
+                self.btn_fw_check,
+            ],
+            spacing=8,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            tight=True,
+        )
+        self.restore_block = ft.Column(
+            [
+                self.restore_row,
+                self.txt_restore_hint,
+                self.btn_restore_factory,
+            ],
+            spacing=8,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            tight=True,
+        )
+
+        self.content = ft.Column(
+            [
+                self.txt_title,
+                ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+                self.sip_alg_block,
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
+                self.fw_block,
+                ft.Divider(height=10, color=ft.Colors.OUTLINE_VARIANT),
+                self.restore_block,
+            ],
+            spacing=12,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+
+    def _version_state_text(self, state: str) -> str:
+        s = str(state or "").strip().lower()
+        mapping = {
+            "": "--",
+            "version_idle": "空闲",
+            "version_start": "正在检查...",
+            "version_checking": "正在检查...",
+            "checking": "正在检查...",
+            "start": "正在检查...",
+            "version_hasnew": "发现新版本",
+            "hasnewversion": "发现新版本",
+            "has_new_version": "发现新版本",
+            "version_has_new_software": "发现新版本",
+            "version_alreadyisnew": "没有新版本",
+            "version_already_new": "没有新版本",
+            "already_new": "没有新版本",
+            "alreadyisnew": "没有新版本",
+            "no_new_version": "没有新版本",
+            "version_nonew": "没有新版本",
+            "version_no_new_software": "没有新版本",
+            "version_no_new_version": "没有新版本",
+            "no_new_software": "没有新版本",
+            "version_error": "检查失败",
+            "error": "检查失败",
+            "network_error": "网络异常",
+        }
+        if s in mapping:
+            return mapping[s]
+        # 兜底：按关键词识别，避免再露出英文状态码
+        if "no_new" in s or "nonew" in s or "already" in s:
+            return "没有新版本"
+        if "hasnew" in s or "has_new" in s or "new_software" in s and "no_" not in s:
+            return "发现新版本"
+        if "start" in s or "check" in s:
+            return "正在检查..."
+        if "error" in s or "fail" in s:
+            return "检查失败"
+        return "正在检查..." if s else "--"
+
+    def _is_fw_checking_state(self, state: str) -> bool:
+        tip = self._version_state_text(state)
+        return tip in {"--", "空闲", "正在检查..."}
+
+    def _is_fw_terminal_state(self, state: str) -> bool:
+        tip = self._version_state_text(state)
+        return tip in {"发现新版本", "没有新版本", "检查失败", "网络异常"}
+
+    def _apply_fw_ui(self, data: Dict[str, str], keep_auto_if_unknown: bool = False):
+        self.upg_interval_day = str(data.get("UpgIntervalDay", self.upg_interval_day) or "15").strip() or "15"
+        self.upg_roam_permission = str(data.get("UpgRoamPermission", self.upg_roam_permission) or "0").strip() or "0"
+        self.current_version = str(data.get("wa_inner_version", "") or "").strip()
+        self.new_version_state = str(data.get("new_version_state", "") or "").strip()
+        mode = str(data.get("UpgMode", "") or "").strip().lower()
+        # 设备有明确 0/1 才覆盖开关；空值时可选保留当前 UI（避免刚打开又被刷回关）
+        if mode in {"1", "true", "on", "yes", "enable", "enabled"}:
+            self.auto_update_enable.value = True
+        elif mode in {"0", "false", "off", "no", "disable", "disabled"}:
+            self.auto_update_enable.value = False
+        elif not keep_auto_if_unknown:
+            # 首次加载且设备没返回时默认关
+            self.auto_update_enable.value = False
+        self.txt_fw_version.value = f"当前版本：{self.current_version or '--'}"
+        self.txt_fw_status.value = f"更新状态：{self._version_state_text(self.new_version_state)}"
+
+    async def load(self, silent: bool = False):
+        if self._loading:
+            return
+        self._loading = True
+        try:
+            sip_on = await self.api_client.get_alg_sip_enable()
+            self.sip_alg_enable.value = bool(sip_on)
+            fw = await self.api_client.get_firmware_auto_setting()
+            self._apply_fw_ui(fw)
+            if not silent:
+                self.set_global_status("其他设置已同步", ft.Colors.PRIMARY)
+            try:
+                self.update()
+            except Exception:
+                pass
+        except Exception as ex:
+            logger.error(f"读取其他设置失败: {ex}", exc_info=DEBUG_MODE)
+            if not silent:
+                self.set_global_status("读取其他设置失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "读取其他设置失败", False)
+        finally:
+            self._loading = False
+
+    async def sync_current(self, force: bool = False):
+        # 按设备回显；force=True 时手动刷新强制回写
+        if (not force) and (not self.visible):
+            return
+        await self.load(silent=True)
+
+    async def on_sip_alg_change(self, e=None):
+        if self._loading or self._applying or self._checking_update:
+            return
+        target = bool(self.sip_alg_enable.value)
+        self._applying = True
+        self.sip_alg_enable.disabled = True
+        try:
+            self.update()
+        except Exception:
+            pass
+        show_toast(self.app_page, f"正在{'开启' if target else '关闭'} SIP ALG...", True)
+        try:
+            ok = await self.api_client.set_alg_sip_enable(target)
+            if ok:
+                self.set_global_status(f"SIP ALG 已{'开启' if target else '关闭'}", ft.Colors.PRIMARY)
+                show_toast(self.app_page, f"SIP ALG 已{'开启' if target else '关闭'}", True)
+                await self.load(silent=True)
+            else:
+                self.sip_alg_enable.value = not target
+                self.set_global_status("SIP ALG 设置失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "SIP ALG 设置失败", False)
+        except Exception as ex:
+            logger.error(f"切换 SIP ALG 失败: {ex}", exc_info=DEBUG_MODE)
+            self.sip_alg_enable.value = not target
+            self.set_global_status("SIP ALG 设置异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "SIP ALG 设置异常", False)
+        finally:
+            self._applying = False
+            self.sip_alg_enable.disabled = False
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    async def on_auto_update_change(self, e=None):
+        if self._loading or self._applying or self._checking_update:
+            # load/程序改 value 时可能触发 on_change，忽略
+            return
+        target = bool(self.auto_update_enable.value)
+        self._applying = True
+        self.auto_update_enable.disabled = True
+        try:
+            self.update()
+        except Exception:
+            pass
+        show_toast(self.app_page, f"正在{'开启' if target else '关闭'}自动检测...", True)
+        try:
+            ok = await self.api_client.set_firmware_auto_setting(
+                enabled=target,
+                interval_day=self.upg_interval_day or "15",
+                roam_permission=self.upg_roam_permission or "0",
+            )
+            if ok:
+                # 下发成功先保留用户选择；设备若回读到明确 0/1 再覆盖
+                self.auto_update_enable.value = target
+                self.set_global_status(f"自动检测已{'开启' if target else '关闭'}", ft.Colors.PRIMARY)
+                show_toast(self.app_page, f"自动检测已{'开启' if target else '关闭'}", True)
+                try:
+                    fw = await self.api_client.get_firmware_auto_setting()
+                    self._apply_fw_ui(fw, keep_auto_if_unknown=True)
+                except Exception as refresh_ex:
+                    logger.debug(f"自动检测设置后回读失败(已保留本地状态): {refresh_ex}")
+            else:
+                self.auto_update_enable.value = not target
+                self.set_global_status("自动检测设置失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "自动检测设置失败", False)
+        except Exception as ex:
+            logger.error(f"切换固件自动检测失败: {ex}", exc_info=DEBUG_MODE)
+            self.auto_update_enable.value = not target
+            self.set_global_status("自动检测设置异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "自动检测设置异常", False)
+        finally:
+            self._applying = False
+            self.auto_update_enable.disabled = False
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    async def on_check_firmware(self, e=None):
+        if self._loading or self._applying or self._checking_update:
+            show_toast(self.app_page, "请稍候再试", False)
+            return
+        self._checking_update = True
+        self.btn_fw_check.disabled = True
+        self.btn_restore_factory.disabled = True
+        self.auto_update_enable.disabled = True
+        self.sip_alg_enable.disabled = True
+        self.txt_fw_status.value = "更新状态：正在检查..."
+        try:
+            self.update()
+        except Exception:
+            pass
+        show_toast(self.app_page, "正在检查固件更新...", True)
+        try:
+            ok = await self.api_client.check_firmware_update()
+            if not ok:
+                self.txt_fw_status.value = "更新状态：检查失败"
+                self.set_global_status("检查更新失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "检查更新失败", False)
+                return
+
+            # 轮询直到终态（有新版本/没有新版本/失败），中间态如 version_start 继续等
+            last_state = "version_start"
+            tip = "正在检查..."
+            for _ in range(20):
+                await asyncio.sleep(1)
+                fw = await self.api_client.get_firmware_auto_setting()
+                # 检查过程中不要把自动检测开关刷乱
+                self._apply_fw_ui(fw, keep_auto_if_unknown=True)
+                last_state = self.new_version_state
+                if self._is_fw_checking_state(last_state):
+                    self.txt_fw_status.value = "更新状态：正在检查..."
+                    tip = "正在检查..."
+                else:
+                    tip = self._version_state_text(last_state)
+                    self.txt_fw_status.value = f"更新状态：{tip}"
+                try:
+                    self.update()
+                except Exception:
+                    pass
+                if self._is_fw_terminal_state(last_state):
+                    break
+
+            # 结束文案：中间态超时按没有新版本处理
+            if self._is_fw_checking_state(last_state):
+                tip = "没有新版本"
+            else:
+                tip = self._version_state_text(last_state)
+                if tip in ("空闲", "--", "正在检查..."):
+                    tip = "没有新版本"
+            self.txt_fw_status.value = f"更新状态：{tip}"
+
+            # 只弹一次最终结果，避免像“又检测了一次”
+            if tip in ("检查失败", "网络异常"):
+                self.set_global_status(f"检查更新完成：{tip}", ft.Colors.ERROR)
+                show_toast(self.app_page, tip, False)
+            else:
+                self.set_global_status(f"检查更新完成：{tip}", ft.Colors.PRIMARY)
+                show_toast(self.app_page, tip, True)
+        except Exception as ex:
+            logger.error(f"检查固件更新失败: {ex}", exc_info=DEBUG_MODE)
+            self.txt_fw_status.value = "更新状态：检查失败"
+            self.set_global_status("检查更新异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "检查更新异常", False)
+        finally:
+            self._checking_update = False
+            self.btn_fw_check.disabled = False
+            self.auto_update_enable.disabled = False
+            self.sip_alg_enable.disabled = False
+            self._sync_restore_button_state()
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def _dialog_width(self) -> float:
+        try:
+            page_w = float(getattr(self.app_page, "width", None) or 0)
+        except Exception:
+            page_w = 0
+        if page_w <= 1:
+            page_w = 400.0
+        # 小屏也至少 300，避免中文标题/副标题被挤裁
+        return max(300.0, min(page_w - 24.0, 360.0))
+
+    def _close_dialog(self, dlg):
+        try:
+            if getattr(dlg, "open", False):
+                self.app_page.pop_dialog()
+        except Exception:
+            try:
+                dlg.open = False
+                dlg.update()
+            except Exception:
+                pass
+
+    def _show_restore_confirm_dialog(self):
+        # 只保留提示文案；按钮按保存双频左右并排
+        try:
+            page_w = float(getattr(self.app_page, "width", None) or 0)
+        except Exception:
+            page_w = 0
+        if page_w <= 1:
+            page_w = 400.0
+        is_small = page_w < 420
+        msg_size = 12 if is_small else 14
+
+        def close_dlg(ev=None):
+            self._close_dialog(dlg)
+
+        async def confirm_dlg(ev=None):
+            close_dlg(ev)
+            await self._execute_restore_factory()
+
+        dlg = ft.AlertDialog(
+            bgcolor=ft.Colors.SURFACE,
+            title_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            content_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            actions_padding=ft.Padding(left=0, top=0, right=0, bottom=0),
+            inset_padding=ft.Padding(left=10, top=24, right=10, bottom=24),
+            modal=True,
+            content=ft.Container(
+                padding=ft.Padding(left=10, top=14, right=10, bottom=0),
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "此操作不可撤销",
+                            size=msg_size,
+                            weight=ft.FontWeight.W_600,
+                            color=ft.Colors.ON_SURFACE,
+                            text_align=ft.TextAlign.CENTER,
+                            no_wrap=False,
+                        ),
+                        ft.Container(
+                            height=70,
+                            alignment=ft.Alignment(0, 0),
+                            padding=ft.Padding(left=10, top=0, right=10, bottom=0),
+                            content=ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        content=ft.TextButton(
+                                            "取消",
+                                            on_click=close_dlg,
+                                            style=ft.ButtonStyle(color=ft.Colors.ON_SURFACE_VARIANT),
+                                        ),
+                                        expand=True,
+                                        alignment=ft.Alignment(0, 0),
+                                    ),
+                                    ft.Container(
+                                        content=ft.TextButton(
+                                            "确认",
+                                            on_click=confirm_dlg,
+                                            style=ft.ButtonStyle(color=ft.Colors.ERROR),
+                                        ),
+                                        expand=True,
+                                        alignment=ft.Alignment(0, 0),
+                                    ),
+                                ],
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                spacing=5,
+                            ),
+                        ),
+                    ],
+                    spacing=6,
+                    tight=True,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ),
+            on_dismiss=close_dlg,
+        )
+        try:
+            self.app_page.show_dialog(dlg)
+        except Exception as ex:
+            logger.error(f"弹出恢复出厂确认框失败: {ex}", exc_info=DEBUG_MODE)
+            show_toast(self.app_page, "无法弹出确认框", False)
+
+
+
+    def _sync_restore_button_state(self):
+        # 仅本地防误触：开关开启后才允许点恢复出厂
+        enabled = bool(getattr(self, "restore_enable", None) and self.restore_enable.value)
+        busy = bool(self._loading or self._applying or self._checking_update)
+        self.btn_restore_factory.disabled = (not enabled) or busy
+        if hasattr(self, "restore_enable"):
+            self.restore_enable.disabled = busy
+
+    def on_restore_enable_change(self, e=None):
+        self._sync_restore_button_state()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    async def on_restore_factory(self, e=None):
+        if self._loading or self._applying or self._checking_update:
+            show_toast(self.app_page, "请稍候再试", False)
+            return
+        if not bool(getattr(self, "restore_enable", None) and self.restore_enable.value):
+            show_toast(self.app_page, "请先开启设备重置", False)
+            return
+        self._show_restore_confirm_dialog()
+
+    async def _execute_restore_factory(self):
+        # 仅在用户点「确认」后调用；执行后设备会重启
+        if self._loading or self._applying or self._checking_update:
+            show_toast(self.app_page, "请稍候再试", False)
+            return
+        self._applying = True
+        self.btn_restore_factory.disabled = True
+        if hasattr(self, "restore_enable"):
+            self.restore_enable.disabled = True
+        self.btn_fw_check.disabled = True
+        self.auto_update_enable.disabled = True
+        self.sip_alg_enable.disabled = True
+        try:
+            self.update()
+        except Exception:
+            pass
+        show_toast(self.app_page, "正在恢复出厂设置...", True)
+        try:
+            ok = await self.api_client.restore_factory_settings()
+            if ok:
+                self.set_global_status("已下发恢复出厂，设备将重启", ft.Colors.PRIMARY)
+                show_toast(self.app_page, "已下发恢复出厂，设备将重启", True)
+            else:
+                self.set_global_status("恢复出厂失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "恢复出厂失败", False)
+        except Exception as ex:
+            logger.error(f"恢复出厂失败: {ex}", exc_info=DEBUG_MODE)
+            self.set_global_status("恢复出厂异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "恢复出厂异常", False)
+        finally:
+            self._applying = False
+            # 执行后自动关掉开关，避免误触
+            if hasattr(self, "restore_enable"):
+                self.restore_enable.value = False
+            self.btn_fw_check.disabled = False
+            self.auto_update_enable.disabled = False
+            self.sip_alg_enable.disabled = False
+            self._sync_restore_button_state()
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        self.txt_title.size = 13 if is_ultra_small else (16 if is_small else 18)
+        label_size = 13 if is_ultra_small else (14 if is_small else 15)
+        hint_size = 11 if is_ultra_small else 12
+        self.txt_sip_alg_title.size = label_size
+        self.txt_sip_alg_hint.size = hint_size
+        self.txt_fw_version.size = hint_size
+        self.txt_fw_status.size = hint_size
+        self.txt_auto_update_title.size = label_size
+        self.txt_auto_update_hint.size = hint_size
+        self.txt_restore_title.size = label_size
+        self.txt_restore_hint.size = hint_size
+        button_height = 36 if is_ultra_small else (42 if is_small else 48)
+        button_text_size = 11 if is_ultra_small else (13 if is_small else 14)
+        for btn in (self.btn_fw_check, self.btn_restore_factory):
+            btn.height = button_height
+            if btn.style and getattr(btn.style, "text_style", None):
+                btn.style.text_style.size = button_text_size
+        self.padding = 8 if is_ultra_small else (12 if is_small else 15)
+        self.border_radius = 8 if is_ultra_small else (10 if is_small else 12)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+
+
+# UI 组件拆分 - 登录密码
+# ==========================================
+class PasswordCard(ft.Container):
+    def __init__(self, page: ft.Page, client: MU5001Client, set_global_status_cb: Callable):
+        super().__init__(padding=15, bgcolor=ft.Colors.SURFACE, border_radius=12)
+        self.app_page = page
+        self.api_client = client
+        self.set_global_status = set_global_status_cb
+        self._applying = False
+        self.build_ui()
+
+    def build_ui(self):
+        self.txt_title = ft.Text("登录密码", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE)
+        # 与登录页管理员密码一致：multiline 可换行，避免小屏显示不全
+        self.input_old_password = create_text_field(
+            "当前密码", "", password=False, can_reveal_password=False,
+            multiline=True, min_lines=1, max_lines=3, expand=True,
+        )
+        self.input_new_password = create_text_field(
+            "新密码", "", password=False, can_reveal_password=False,
+            multiline=True, min_lines=1, max_lines=3, expand=True,
+        )
+        self.input_confirm_password = create_text_field(
+            "确认新密码", "", password=False, can_reveal_password=False,
+            multiline=True, min_lines=1, max_lines=3, expand=True,
+        )
+        self.btn_change_password = create_button("修改", on_click=self.on_change_password, expand=True)
+        self.txt_password_hint = ft.Text(
+            "修改成功后请使用新密码登录",
+            size=12,
+            color=ft.Colors.ON_SURFACE_VARIANT,
+            no_wrap=False,
+        )
+        self.content = ft.Column(
+            [
+                self.txt_title,
+                ft.Divider(height=5, color=ft.Colors.OUTLINE_VARIANT),
+                self.input_old_password,
+                self.input_new_password,
+                self.input_confirm_password,
+                self.btn_change_password,
+                self.txt_password_hint,
+            ],
+            spacing=12,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+
+    def reset_form(self):
+        self.input_old_password.value = ""
+        self.input_new_password.value = ""
+        self.input_confirm_password.value = ""
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    async def on_change_password(self, e=None):
+        if self._applying:
+            show_toast(self.app_page, "请稍候再试", False)
+            return
+        # multiline 输入可能带换行，提交前去掉
+        old_pwd = str(self.input_old_password.value or "").replace("\r", "").replace("\n", "").strip()
+        new_pwd = str(self.input_new_password.value or "").replace("\r", "").replace("\n", "").strip()
+        confirm_pwd = str(self.input_confirm_password.value or "").replace("\r", "").replace("\n", "").strip()
+        if not old_pwd:
+            show_toast(self.app_page, "请输入当前密码", False)
+            return
+        if not new_pwd:
+            show_toast(self.app_page, "请输入新密码", False)
+            return
+        if new_pwd != confirm_pwd:
+            show_toast(self.app_page, "两次输入的新密码不一致", False)
+            return
+        if new_pwd == old_pwd:
+            show_toast(self.app_page, "新密码不能与当前密码相同", False)
+            return
+
+        self._applying = True
+        self.btn_change_password.disabled = True
+        try:
+            self.update()
+        except Exception:
+            pass
+        show_toast(self.app_page, "正在修改登录密码...", True)
+        try:
+            ok = await self.api_client.change_admin_password(old_pwd, new_pwd)
+            if ok:
+                try:
+                    self.api_client.state.password = new_pwd
+                except Exception:
+                    pass
+                self.reset_form()
+                self.set_global_status("登录密码已修改", ft.Colors.PRIMARY)
+                show_toast(self.app_page, "登录密码修改成功", True)
+            else:
+                self.set_global_status("登录密码修改失败", ft.Colors.ERROR)
+                show_toast(self.app_page, "登录密码修改失败，请检查当前密码", False)
+        except Exception as ex:
+            logger.error(f"修改登录密码失败: {ex}", exc_info=DEBUG_MODE)
+            self.set_global_status("登录密码修改异常", ft.Colors.ERROR)
+            show_toast(self.app_page, "登录密码修改异常", False)
+        finally:
+            self._applying = False
+            self.btn_change_password.disabled = False
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def update_size(self, is_small: bool, is_ultra_small: bool = False):
+        self.txt_title.size = 13 if is_ultra_small else (16 if is_small else 18)
+        hint_size = 11 if is_ultra_small else 12
+        self.txt_password_hint.size = hint_size
+        field_pad = 8 if is_ultra_small else (10 if is_small else 12)
+        field_size = 12 if is_ultra_small else (13 if is_small else 14)
+        for field in (self.input_old_password, self.input_new_password, self.input_confirm_password):
+            if hasattr(field, "text_size"):
+                field.text_size = field_size
+            if hasattr(field, "content_padding"):
+                field.content_padding = field_pad
+            if hasattr(field, "multiline"):
+                field.multiline = True
+            if hasattr(field, "min_lines"):
+                field.min_lines = 1
+            if hasattr(field, "max_lines"):
+                field.max_lines = 3
+        self.btn_change_password.height = 36 if is_ultra_small else (42 if is_small else 48)
+        if self.btn_change_password.style and getattr(self.btn_change_password.style, "text_style", None):
+            self.btn_change_password.style.text_style.size = 11 if is_ultra_small else (13 if is_small else 14)
+        self.padding = 8 if is_ultra_small else (12 if is_small else 15)
+        self.border_radius = 8 if is_ultra_small else (10 if is_small else 12)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+
 class MU5001:
     def __init__(self, page: ft.Page):
         self.page = page
@@ -8366,6 +9216,8 @@ class MU5001:
         self.firewall_card = FirewallCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
         self.router_card = RouterCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
         self.access_mode_card = AccessModeCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
+        self.other_card = OtherCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
+        self.password_card = PasswordCard(self.page, self.client, set_global_status_cb=self.status_card.set_global_status)
 
         # 构建主视图布局 (这一步会创建 self.theme_btn)
         self.build_main_view()
@@ -8405,6 +9257,10 @@ class MU5001:
             self.router_card.visible = False
         if hasattr(self, 'access_mode_card'):
             self.access_mode_card.visible = False
+        if hasattr(self, 'other_card'):
+            self.other_card.visible = False
+        if hasattr(self, 'password_card'):
+            self.password_card.visible = False
         self.view_toolbox.update()
 
     def show_wifi_settings(self, e):
@@ -8420,6 +9276,10 @@ class MU5001:
             self.router_card.visible = False
         if hasattr(self, 'access_mode_card'):
             self.access_mode_card.visible = False
+        if hasattr(self, 'other_card'):
+            self.other_card.visible = False
+        if hasattr(self, 'password_card'):
+            self.password_card.visible = False
         self.view_toolbox.update()
 
     def show_reboot_settings(self, e):
@@ -8435,6 +9295,10 @@ class MU5001:
             self.router_card.visible = False
         if hasattr(self, 'access_mode_card'):
             self.access_mode_card.visible = False
+        if hasattr(self, 'other_card'):
+            self.other_card.visible = False
+        if hasattr(self, 'password_card'):
+            self.password_card.visible = False
         self.view_toolbox.update()
 
     def show_apn_settings(self, e):
@@ -8449,6 +9313,10 @@ class MU5001:
             self.router_card.visible = False
         if hasattr(self, 'access_mode_card'):
             self.access_mode_card.visible = False
+        if hasattr(self, 'other_card'):
+            self.other_card.visible = False
+        if hasattr(self, 'password_card'):
+            self.password_card.visible = False
         self.view_toolbox.update()
 
     def show_firewall_settings(self, e):
@@ -8461,6 +9329,10 @@ class MU5001:
             self.access_mode_card.visible = False
         if hasattr(self, 'router_card'):
             self.router_card.visible = False
+        if hasattr(self, 'other_card'):
+            self.other_card.visible = False
+        if hasattr(self, 'password_card'):
+            self.password_card.visible = False
         if hasattr(self, 'firewall_card'):
             self.firewall_card.visible = True
             # 每次进入防火墙都重新拉取当前页状态，避免官方网页改过后本地开关不刷新
@@ -8480,6 +9352,10 @@ class MU5001:
             self.firewall_card.visible = False
         if hasattr(self, "access_mode_card"):
             self.access_mode_card.visible = False
+        if hasattr(self, "other_card"):
+            self.other_card.visible = False
+        if hasattr(self, "password_card"):
+            self.password_card.visible = False
         if hasattr(self, "router_card"):
             self.router_card.visible = True
             spawn_background_task(self, self.router_card.load())
@@ -8495,10 +9371,53 @@ class MU5001:
             self.firewall_card.visible = False
         if hasattr(self, "router_card"):
             self.router_card.visible = False
+        if hasattr(self, "other_card"):
+            self.other_card.visible = False
+        if hasattr(self, "password_card"):
+            self.password_card.visible = False
         if hasattr(self, "access_mode_card"):
             self.access_mode_card.visible = True
             spawn_background_task(self, self.access_mode_card.load())
         self.view_toolbox.update()
+
+    def show_other_settings(self, e=None):
+        self.toolbox_menu.visible = False
+        self.toolbox_content.visible = True
+        self.settings_card.wifi_section.visible = False
+        self.reboot_card.visible = False
+        self.apn_card.visible = False
+        if hasattr(self, "firewall_card"):
+            self.firewall_card.visible = False
+        if hasattr(self, "router_card"):
+            self.router_card.visible = False
+        if hasattr(self, "access_mode_card"):
+            self.access_mode_card.visible = False
+        if hasattr(self, "password_card"):
+            self.password_card.visible = False
+        if hasattr(self, "other_card"):
+            self.other_card.visible = True
+            spawn_background_task(self, self.other_card.load())
+        self.view_toolbox.update()
+
+    def show_password_settings(self, e=None):
+        self.toolbox_menu.visible = False
+        self.toolbox_content.visible = True
+        self.settings_card.wifi_section.visible = False
+        self.reboot_card.visible = False
+        self.apn_card.visible = False
+        if hasattr(self, "firewall_card"):
+            self.firewall_card.visible = False
+        if hasattr(self, "router_card"):
+            self.router_card.visible = False
+        if hasattr(self, "access_mode_card"):
+            self.access_mode_card.visible = False
+        if hasattr(self, "other_card"):
+            self.other_card.visible = False
+        if hasattr(self, "password_card"):
+            self.password_card.visible = True
+            self.password_card.reset_form()
+        self.view_toolbox.update()
+
 
     def show_disconnected_ui(self, reason: str = "network"):
         # reason=network: 没连上设备网；reason=session: 连着设备但登录被挤掉
@@ -8647,6 +9566,8 @@ class MU5001:
             ft.Container(self._create_tool_item(ft.Icons.SECURITY, "防火墙", self.show_firewall_settings), col={"xs": 12, "sm": 6}),
             ft.Container(self._create_tool_item(ft.Icons.ROUTER, "路由设置", self.show_router_settings), col={"xs": 12, "sm": 6}),
             ft.Container(self._create_tool_item(ft.Icons.SWAP_HORIZ, "接入模式", self.show_access_mode_settings), col={"xs": 12, "sm": 6}),
+            ft.Container(self._create_tool_item(ft.Icons.LOCK, "登录密码", self.show_password_settings), col={"xs": 12, "sm": 6}),
+            ft.Container(self._create_tool_item(ft.Icons.MORE_HORIZ, "其他", self.show_other_settings), col={"xs": 12, "sm": 6}),
         ]
         self.toolbox_menu = ft.ResponsiveRow(controls=self.toolbox_items, spacing=14, run_spacing=14)
         
@@ -8656,6 +9577,8 @@ class MU5001:
         self.firewall_card.visible = False
         self.router_card.visible = False
         self.access_mode_card.visible = False
+        self.other_card.visible = False
+        self.password_card.visible = False
 
         self.toolbox_content = ft.Column([
             self.settings_card.wifi_section,
@@ -8664,6 +9587,8 @@ class MU5001:
             self.firewall_card,
             self.router_card,
             self.access_mode_card,
+            self.other_card,
+            self.password_card,
         ], visible=False)
 
         # 内部滚动容器
@@ -9071,6 +9996,8 @@ class MU5001:
                 await self.firewall_card.sync_current_feature(force=True)
             if hasattr(self, "router_card") and self.router_card is not None:
                 await self.router_card.sync_current(force=True)
+            if hasattr(self, "other_card") and self.other_card is not None:
+                await self.other_card.sync_current(force=True)
 
             dev_status = " | 开发者模式已解锁" if self.device_state.dev_unlocked else " | 开发者模式未解锁"
             self.status_card.set_global_status("数据读取成功" + dev_status, ft.Colors.PRIMARY if self.device_state.dev_unlocked else ft.Colors.ERROR)
@@ -9150,6 +10077,8 @@ class MU5001:
             await self.firewall_card.sync_current_feature()
         if hasattr(self, "router_card"):
             await self.router_card.sync_current()
+        if hasattr(self, "other_card"):
+            await self.other_card.sync_current()
         if hasattr(self, "access_mode_card"):
             # 强制开数据后再同步接入页，并自动扫描热点
             await self.access_mode_card.load(silent=True, auto_scan=True)
@@ -9312,6 +10241,10 @@ class MU5001:
             self.router_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'access_mode_card'):
             self.access_mode_card.update_size(is_small, is_ultra_small)
+        if hasattr(self, 'other_card'):
+            self.other_card.update_size(is_small, is_ultra_small)
+        if hasattr(self, 'password_card'):
+            self.password_card.update_size(is_small, is_ultra_small)
         if hasattr(self, 'toolbox_menu'):
             self.toolbox_menu.spacing = 6 if is_ultra_small else (10 if is_small else 14)
             self.toolbox_menu.run_spacing = 6 if is_ultra_small else (10 if is_small else 14)
